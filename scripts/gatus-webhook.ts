@@ -23,6 +23,9 @@
  * Run: WEBHOOK_SECRET=... TARGET_PLATFORM_ID=... pnpm exec tsx scripts/gatus-webhook.ts
  */
 import crypto from 'crypto';
+import fs from 'fs';
+import os from 'os';
+import Database from 'better-sqlite3';
 import http from 'http';
 import net from 'net';
 import path from 'path';
@@ -41,6 +44,26 @@ if (!SECRET || !PLATFORM_ID) {
   console.error('WEBHOOK_SECRET and TARGET_PLATFORM_ID are required');
   process.exit(1);
 }
+
+// Append-only alert log, readable by agents (mounted read-only). journal_mode=DELETE keeps it
+// readable across a read-only bind mount.
+const ALERT_DB = process.env.ALERT_DB_PATH ?? path.join(os.homedir(), 'nanoclaw-alerts', 'alerts.db');
+fs.mkdirSync(path.dirname(ALERT_DB), { recursive: true });
+const alertDb = new Database(ALERT_DB);
+alertDb.pragma('journal_mode = DELETE');
+alertDb.exec(`CREATE TABLE IF NOT EXISTS alerts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  grp TEXT,
+  status TEXT NOT NULL,
+  description TEXT,
+  url TEXT,
+  outcome TEXT NOT NULL
+)`);
+const insertAlert = alertDb.prepare(
+  'INSERT INTO alerts (ts, endpoint, grp, status, description, url, outcome) VALUES (?, ?, ?, ?, ?, ?, ?)',
+);
 
 const lastTriggered = new Map<string, number>();
 const pendingResolve = new Map<string, NodeJS.Timeout>();
@@ -69,7 +92,7 @@ function format(kind: 'triggered' | 'resolved', endpoint: string, description: s
     .join('\n');
 }
 
-async function handle(body: Record<string, unknown>): Promise<string> {
+async function handleInner(body: Record<string, unknown>): Promise<string> {
   const endpoint = String(body.endpoint ?? 'unknown').slice(0, 100);
   // Accept `status` (ours) or `state` (Hermes-style body); Gatus sends TRIGGERED/RESOLVED by default.
   const status = String(body.status ?? body.state ?? '').toLowerCase() === 'resolved' ? 'resolved' : 'triggered';
@@ -102,6 +125,25 @@ async function handle(body: Record<string, unknown>): Promise<string> {
     }, RESOLVE_MS),
   );
   return 'resolve-queued';
+}
+
+async function handle(body: Record<string, unknown>): Promise<string> {
+  const outcome = await handleInner(body);
+  try {
+    const st = String(body.status ?? body.state ?? '').toLowerCase() === 'resolved' ? 'resolved' : 'triggered';
+    insertAlert.run(
+      new Date().toISOString(),
+      String(body.endpoint ?? 'unknown').slice(0, 100),
+      body.group ? String(body.group).slice(0, 100) : null,
+      st,
+      String(body.description ?? '').slice(0, 500),
+      String(body.url ?? '').slice(0, 300),
+      outcome,
+    );
+  } catch (e) {
+    console.error('alert log failed', e);
+  }
+  return outcome;
 }
 
 http
