@@ -124,4 +124,4 @@ http
       }
     });
   })
-  .listen(PORT, HOST, () => console.log(`gatus-webhook listening on ${HOST}:${PORT} → ${CHANNEL_TYPE}:${PLATFORM_ID}`));
+  .listen(PORT, HOST, () => console.log(`gatus-webhook listening on ${HOST}:${PORT} → ${PLATFORM_ID}`));
