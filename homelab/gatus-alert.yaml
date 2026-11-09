@@ -1,0 +1,22 @@
+# Add to the Gatus config on the VPS. The webhook listens on the NanoClaw host's Tailscale IP.
+alerting:
+  custom:
+    url: "http://NANOCLAW_TAILSCALE_IP:8787/alert"
+    method: "POST"
+    headers:
+      Content-Type: "application/json"
+      X-Webhook-Secret: "SAME_SECRET_AS_ENV_FILE"
+    body: |
+      {"endpoint": "[ENDPOINT_NAME]", "status": "[ALERT_TRIGGERED_OR_RESOLVED]", "description": "[ALERT_DESCRIPTION]", "url": "[ENDPOINT_URL]"}
+    placeholders:
+      ALERT_TRIGGERED_OR_RESOLVED:
+        TRIGGERED: "triggered"
+        RESOLVED: "resolved"
+
+# Then on each endpoint:
+# endpoints:
+#   - name: plex
+#     url: "http://..."
+#     alerts:
+#       - type: custom
+#         send-on-resolved: true

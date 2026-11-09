@@ -1,0 +1,88 @@
+# Homelab notes (fork-local)
+
+Installation-specific setup for this fork. Kept in `homelab/` so it stays out of upstream diffs.
+Plan doc: "Proactive Agent Plan — NanoClaw on Homelab" (Claude Docs).
+
+## Current state (Mac mini, trial period)
+
+- NanoClaw v2 from `nanocoai/nanoclaw` (remote `upstream`), fork at `bolero/nanoclaw`.
+- Runtime: Docker Desktop. Gateway: OneCLI (`NANOCLAW_GATEWAY_PROVIDER=onecli`).
+- Claude: subscription via `claude setup-token`, stored in OneCLI (`authMode: oauth`). No API key.
+- Channel: Telegram, one owner DM, agent `bono` (provider `claude`).
+- Host service: launchd `com.nanoclaw-v2-<slug>` (created by `nanoclaw.sh`).
+
+## Verified
+
+| Test | Result |
+|---|---|
+| Claude subscription through the gateway | Pass |
+| Telegram Approve/Deny (`install_packages`) | Pass |
+| Gatus-style webhook → agent reply in Telegram | Pass |
+| Codex on ChatGPT | Parked (see below) |
+| Aperture + `X-Job-Name` | Not tested (needs Aperture) |
+| OpenCode (Gemma local / Gemini Flash) | Not tested |
+| Browser worker on the Mac mini | Not tested |
+
+## Gatus webhook sidecar
+
+`scripts/gatus-webhook.ts` receives `POST /alert` and injects the alert into the agent through
+`data/cli.sock` (the CLI admin channel), addressed to the target Telegram chat. No NanoClaw core
+changes. Debounce: repeat alerts per endpoint are dropped for `REPEAT_SUPPRESS_MIN`; a recovery is
+held `RESOLVE_DELAY_SEC` and dropped if the check re-triggers.
+
+First use needs one owner approval: the sender `cli:local` is unknown, so NanoClaw sends an approval
+card to the owner's Telegram DM. Approve it once.
+
+Setup:
+
+```bash
+mkdir -p ~/.config/nanoclaw && chmod 700 ~/.config/nanoclaw
+cp homelab/gatus-webhook.env.example ~/.config/nanoclaw/gatus-webhook.env
+chmod 600 ~/.config/nanoclaw/gatus-webhook.env
+# edit it: set WEBHOOK_SECRET (openssl rand -hex 24), WEBHOOK_HOST (tailscale ip -4), TARGET_PLATFORM_ID
+```
+
+Run by hand to test: `homelab/run-gatus-webhook.sh`.
+
+Run as a service (macOS launchd):
+
+```bash
+sed -e "s|__REPO__|$PWD|g" -e "s|__HOME__|$HOME|g" \
+  homelab/launchd/com.nanoclaw-gatus-webhook.plist.template \
+  > ~/Library/LaunchAgents/com.nanoclaw-gatus-webhook.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nanoclaw-gatus-webhook.plist
+```
+
+Then add `homelab/gatus-alert.yaml` to the Gatus config on the VPS (use the same secret) and allow the VPS's
+Tailscale tag to reach port 8787 on this host in the ACLs. The sidecar binds to the Tailscale IP only.
+
+## Codex (parked)
+
+- `pnpm exec tsx setup/index.ts --step provider-auth codex` needs `codex` on PATH. npm's global bin here is
+  `/Users/bolero/node/bin`, so `export PATH="/Users/bolero/node/bin:$PATH"` (added to `~/.zshrc`).
+- The first attempt switched agent `bono` to Codex before auth finished; the container then crashed with
+  `EACCES: permission denied, open '/home/node/.codex/config.toml'`. Fix: `ncl groups config update --id <group> --provider claude`
+  then `ncl groups restart --id <group>`.
+- Retry on a separate test agent group, never on `bono`. Check the `EACCES` error again once the login is stored.
+
+## Rules for this install
+
+- Never set `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`; the subscription token lives in OneCLI only.
+- Keep each subscription single-user on its official client.
+- Test new providers on a separate group, not the main chat.
+- Don't mount the Docker socket into agent containers.
+
+## Migrating to a VM on Proxmox (after the trial)
+
+Carries over: this repo (clone the fork), the Telegram bot token, the design and findings.
+Redo on the VM:
+
+1. Stop NanoClaw here first (only one machine may poll the Telegram bot): `launchctl bootout gui/$(id -u)/com.nanoclaw-v2-<slug>`.
+2. VM: Debian/Ubuntu, about 4 vCPU, 8 GB RAM, 60 GB disk. Install Tailscale with a tag; install Docker Engine.
+3. `git clone https://github.com/bolero/nanoclaw.git && cd nanoclaw && bash nanoclaw.sh`. Answer No to the
+   hardened image and the perks dashboard. Pick the Claude subscription (`setup-token`) and Telegram.
+4. Re-pair Telegram and re-approve the `cli:local` sender (approvals live in `data/v2.db`).
+5. Recreate the webhook env file and run the sidecar as a systemd unit; update the Gatus alert URL to the VM's Tailscale IP.
+6. Tailscale ACLs: VPS (Gatus) → VM:8787; VM → Aperture; VM → Mac mini (browser worker, local models).
+7. Optional: copy `data/` and `groups/` to keep the agent's memory (starting fresh is fine).
+8. Snapshot the VM once it works.
