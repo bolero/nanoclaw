@@ -5,4 +5,4 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ENV_FILE="${GATUS_WEBHOOK_ENV:-$HOME/.config/nanoclaw/gatus-webhook.env}"
 set -a; . "$ENV_FILE"; set +a
-exec node node_modules/.bin/tsx scripts/gatus-webhook.ts
+exec pnpm exec tsx scripts/gatus-webhook.ts
