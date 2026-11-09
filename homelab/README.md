@@ -18,6 +18,8 @@ Plan doc: "Proactive Agent Plan — NanoClaw on Homelab" (Claude Docs).
 | Claude subscription through the gateway | Pass |
 | Telegram Approve/Deny (`install_packages`) | Pass |
 | Gatus-style webhook → agent reply in Telegram | Pass |
+| Webhook as a launchd service | Pass |
+| Agent SSH access (per-agent key mounted read-only into one group) | Pass |
 | Codex on ChatGPT | Parked (see below) |
 | Aperture + `X-Job-Name` | Not tested (needs Aperture) |
 | OpenCode (Gemma local / Gemini Flash) | Not tested |
@@ -64,6 +66,16 @@ Tailscale tag to reach port 8787 on this host in the ACLs. The sidecar binds to 
   `EACCES: permission denied, open '/home/node/.codex/config.toml'`. Fix: `ncl groups config update --id <group> --provider claude`
   then `ncl groups restart --id <group>`.
 - Retry on a separate test agent group, never on `bono`. Check the `EACCES` error again once the login is stored.
+
+## Agent SSH access (generic)
+
+Each agent gets its own key, kept outside `~/.ssh` (the mount allowlist blocks paths containing `.ssh`, `id_ed25519`,
+`private_key` or `credentials`). For a NanoClaw group: put the key, an ssh `config`, `known_hosts` and an `ssh-wrap` script in one
+directory, allow it in `~/.config/nanoclaw/mount-allowlist.json` (read-only), then `ncl groups config add-mount --id <group>
+--host <dir> --container agent-ssh --ro` and `ncl groups restart`. The image has `git` but not `ssh`: approve `install_packages` for
+`openssh-client` and `libnss-wrapper`. The container runs as the host uid, which has no `/etc/passwd` entry, and OpenSSH refuses to
+run without one, so `ssh-wrap` uses `nss_wrapper` (`LD_PRELOAD`) to fake it; set `git config --global core.sshCommand ~/.ssh/ssh-wrap`.
+Give the mount only to a test group, never the group that reads outside messages.
 
 ## Rules for this install
 
