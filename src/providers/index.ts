@@ -5,3 +5,4 @@ import './claude.js';
 //
 // Skills add a new provider by appending one import line below.
 import './codex.js';
+import './opencode.js';

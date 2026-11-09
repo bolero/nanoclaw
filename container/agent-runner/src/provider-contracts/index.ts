@@ -8,3 +8,4 @@
 
 import './claude.js';
 import './codex.js';
+import './opencode.js';
