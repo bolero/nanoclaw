@@ -73,7 +73,12 @@ function sendToAgent(text: string): Promise<void> {
     const s = net.createConnection(SOCK);
     s.once('error', reject);
     s.once('connect', () => {
-      const msg = { text, to: { channelType: CHANNEL_TYPE, platformId: PLATFORM_ID, threadId: THREAD_ID } };
+      const msg = {
+        text,
+        sender: 'gatus',
+        senderId: 'webhook:gatus',
+        to: { channelType: CHANNEL_TYPE, platformId: PLATFORM_ID, threadId: THREAD_ID },
+      };
       s.end(JSON.stringify(msg) + '\n', () => resolve());
     });
   });
@@ -108,11 +113,13 @@ async function handleInner(body: Record<string, unknown>): Promise<string> {
     }
     const last = lastTriggered.get(endpoint) ?? 0;
     if (Date.now() - last < REPEAT_MS) return 'repeat-suppressed';
-    lastTriggered.set(endpoint, Date.now());
+    if (lastTriggered.size > 500) return 'dropped-too-many-endpoints';
     await sendToAgent(format('triggered', endpoint, description, url));
+    lastTriggered.set(endpoint, Date.now()); // only after a successful send, so a failed send is retried
     return 'sent';
   }
 
+  if (!lastTriggered.has(endpoint)) return 'resolve-without-trigger';
   if (pendingResolve.has(endpoint)) return 'resolve-already-pending';
   pendingResolve.set(
     endpoint,
@@ -128,7 +135,13 @@ async function handleInner(body: Record<string, unknown>): Promise<string> {
 }
 
 async function handle(body: Record<string, unknown>): Promise<string> {
-  const outcome = await handleInner(body);
+  let outcome: string;
+  try {
+    outcome = await handleInner(body);
+  } catch (e) {
+    outcome = 'send-failed';
+    console.error('alert send failed', e);
+  }
   try {
     const st = String(body.status ?? body.state ?? '').toLowerCase() === 'resolved' ? 'resolved' : 'triggered';
     insertAlert.run(
@@ -143,6 +156,7 @@ async function handle(body: Record<string, unknown>): Promise<string> {
   } catch (e) {
     console.error('alert log failed', e);
   }
+  if (outcome === 'send-failed') throw new Error('send-failed');
   return outcome;
 }
 
