@@ -30,6 +30,8 @@ import http from 'http';
 import net from 'net';
 import path from 'path';
 
+import { formatAlert as format } from './alert-data.js';
+
 const SECRET = process.env.WEBHOOK_SECRET ?? '';
 const HOST = process.env.WEBHOOK_HOST ?? '127.0.0.1';
 const PORT = Number(process.env.WEBHOOK_PORT ?? 8787);
@@ -91,18 +93,11 @@ function safeEqual(a: string, b: string): boolean {
   return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
 }
 
-function format(kind: 'triggered' | 'resolved', endpoint: string, description: string, url: string): string {
-  const head = kind === 'triggered' ? `ALERT: ${endpoint} is failing` : `RESOLVED: ${endpoint} recovered`;
-  return [`[Gatus] ${head}`, description && `Details: ${description}`, url && `URL: ${url}`]
-    .filter(Boolean)
-    .join('\n');
-}
-
 async function handleInner(body: Record<string, unknown>): Promise<string> {
   const endpoint = String(body.endpoint ?? 'unknown').slice(0, 100);
   // Accept `status` (ours) or `state` (Hermes-style body); Gatus sends TRIGGERED/RESOLVED by default.
   const status = String(body.status ?? body.state ?? '').toLowerCase() === 'resolved' ? 'resolved' : 'triggered';
-  const description = String(body.description ?? '').slice(0, 500);
+  const description = String(body.description ?? '').slice(0, 300);
   const url = String(body.url ?? '').slice(0, 300);
 
   if (status === 'triggered') {
@@ -133,9 +128,7 @@ async function handleInner(body: Record<string, unknown>): Promise<string> {
     setTimeout(() => {
       pendingResolve.delete(endpoint);
       lastTriggered.delete(endpoint);
-      sendToAgent(format('resolved', endpoint, description, url)).catch((e) =>
-        console.error('resolve send failed', e),
-      );
+      sendToAgent(format('resolved', endpoint, description, url)).catch((e) => console.error('resolve send failed', e));
     }, RESOLVE_MS),
   );
   return 'resolve-queued';
@@ -156,7 +149,7 @@ async function handle(body: Record<string, unknown>): Promise<string> {
       String(body.endpoint ?? 'unknown').slice(0, 100),
       body.group ? String(body.group).slice(0, 100) : null,
       st,
-      String(body.description ?? '').slice(0, 500),
+      String(body.description ?? '').slice(0, 300),
       String(body.url ?? '').slice(0, 300),
       outcome,
     );
@@ -192,7 +185,10 @@ http
       ]).then(([host, proxy]) => {
         const ok = host && proxy;
         res.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ status: ok ? 'ok' : 'degraded', host: host ? 'ok' : 'down', proxy: proxy ? 'ok' : 'down' }) + '\n');
+        res.end(
+          JSON.stringify({ status: ok ? 'ok' : 'degraded', host: host ? 'ok' : 'down', proxy: proxy ? 'ok' : 'down' }) +
+            '\n',
+        );
       });
       return;
     }
