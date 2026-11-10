@@ -9,6 +9,8 @@
  *
  *   pnpm exec tsx scripts/bridge-policy.ts build
  *   pnpm exec tsx scripts/bridge-policy.ts add-caller <agent> --onecli-agent <id> --host <bridge host>
+ *   pnpm exec tsx scripts/bridge-policy.ts add-caller <agent> --onecli-agent <id> --target google
+ *       (Google broker key: host host.docker.internal, path /google/mcp, file google-callers.json)
  *   pnpm exec tsx scripts/bridge-policy.ts show
  *
  * Files (0600): ~/.config/nanoclaw/bridge-callers.json, ~/.config/nanoclaw/bridge-policy.json
@@ -24,6 +26,7 @@ import { accessFor, type HomeConfig, loadHomeConfig, noteFoldersFor, reminderLis
 const DIR = process.env.NANOCLAW_CONFIG_DIR ?? path.join(os.homedir(), '.config', 'nanoclaw');
 export const CALLERS_FILE = path.join(DIR, 'bridge-callers.json');
 export const POLICY_FILE = path.join(DIR, 'bridge-policy.json');
+export const GOOGLE_CALLERS_FILE = path.join(DIR, 'google-callers.json');
 
 /** agent -> sha256 hex of its caller key */
 export type Callers = Record<string, string>;
@@ -69,9 +72,9 @@ export function buildPolicy(cfg: HomeConfig, callers: Callers, now = new Date())
   };
 }
 
-function readCallers(): Callers {
-  if (!fs.existsSync(CALLERS_FILE)) return {};
-  return JSON.parse(fs.readFileSync(CALLERS_FILE, 'utf8')) as Callers;
+function readCallers(file = CALLERS_FILE): Callers {
+  if (!fs.existsSync(file)) return {};
+  return JSON.parse(fs.readFileSync(file, 'utf8')) as Callers;
 }
 
 function writePrivate(file: string, data: unknown): void {
@@ -92,12 +95,13 @@ function onecli(args: string[]): unknown {
   return JSON.parse(out);
 }
 
-function addCaller(agent: string, onecliAgent: string, host: string): void {
+function addCaller(agent: string, onecliAgent: string, host: string, target: 'bridges' | 'google'): void {
   const cfg = loadHomeConfig();
   if (!cfg.agents.includes(agent)) throw new Error(`unknown agent "${agent}"`);
   if (!/^[a-z0-9.-]+$/.test(host)) throw new Error('--host must be a bare hostname');
-  const callers = readCallers();
-  if (callers[agent]) throw new Error(`"${agent}" already has a caller key; remove it from ${CALLERS_FILE} first`);
+  const file = target === 'google' ? GOOGLE_CALLERS_FILE : CALLERS_FILE;
+  const callers = readCallers(file);
+  if (callers[agent]) throw new Error(`"${agent}" already has a ${target} caller key; remove it from ${file} first`);
   const key = crypto.randomBytes(32).toString('base64url');
   // Pass the key to OneCLI through a private temp file, never argv or stdout.
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-key-'));
@@ -108,7 +112,7 @@ function addCaller(agent: string, onecliAgent: string, host: string): void {
       'secrets',
       'create',
       '--name',
-      `Bridge caller key (${agent})`,
+      target === 'google' ? `Google broker caller key (${agent})` : `Bridge caller key (${agent})`,
       '--type',
       'generic',
       '--file',
@@ -116,7 +120,7 @@ function addCaller(agent: string, onecliAgent: string, host: string): void {
       '--host-pattern',
       host,
       '--path-pattern',
-      '/mcp',
+      target === 'google' ? '/google/mcp' : '/mcp',
       '--header-name',
       'X-Caller-Key',
     ]) as { data?: { id?: string }; id?: string };
@@ -127,9 +131,9 @@ function addCaller(agent: string, onecliAgent: string, host: string): void {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
   callers[agent] = sha256(key);
-  writePrivate(CALLERS_FILE, callers);
-  build();
-  console.log(`caller key for ${agent} created, attached to OneCLI agent ${onecliAgent}, policy rebuilt`);
+  writePrivate(file, callers);
+  if (target === 'bridges') build();
+  console.log(`${target} caller key for ${agent} created and attached to OneCLI agent ${onecliAgent}`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
@@ -144,7 +148,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
       const p = build();
       console.log(`wrote ${POLICY_FILE}: ${Object.keys(p.callers).length} caller(s)`);
     } else if (cmd === 'add-caller') {
-      addCaller(rest[0], flag('--onecli-agent'), flag('--host'));
+      const target = rest.includes('--target') ? flag('--target') : 'bridges';
+      if (target !== 'bridges' && target !== 'google') throw new Error('--target must be bridges or google');
+      addCaller(rest[0], flag('--onecli-agent'), target === 'google' ? 'host.docker.internal' : flag('--host'), target);
     } else if (cmd === 'show') {
       const p = JSON.parse(fs.readFileSync(POLICY_FILE, 'utf8')) as BridgePolicy;
       console.log(
