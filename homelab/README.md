@@ -77,6 +77,22 @@ directory, allow it in `~/.config/nanoclaw/mount-allowlist.json` (read-only), th
 run without one, so `ssh-wrap` uses `nss_wrapper` (`LD_PRELOAD`) to fake it; set `git config --global core.sshCommand ~/.ssh/ssh-wrap`.
 Give the mount only to a test group, never the group that reads outside messages.
 
+## Home assistant pieces (generic)
+
+- `home.example.yaml` → copy to `~/.config/nanoclaw/home.yaml` (mode 0600) and fill in. Validate with
+  `pnpm exec tsx scripts/home-config.ts`. Nothing personal lives in the repo.
+- **Google broker** (`scripts/google-broker.ts`): holds Google refresh tokens; agents reach it as an MCP
+  server at `http://host.docker.internal:8791/google/mcp` through the credential gateway, which injects a
+  per-agent `X-Caller-Key`. Gmail read-only; calendar writes are tagged and only the creating agent can
+  delete them. Install: fill `launchd/com.nanoclaw-google-broker.plist.template` (`__REPO__`, `__HOME__`)
+  into `~/Library/LaunchAgents/`, then `launchctl bootstrap gui/$(id -u) <plist>`. Consent per account:
+  `pnpm exec tsx scripts/google-authorize.ts <account>` (loopback PKCE with your Desktop OAuth client;
+  `GOOGLE_CLIENT_FILE` points at it). Health: `GET /health` (503 while any account needs consent).
+- **Caller keys**: `scripts/bridge-policy.ts add-caller <agent> --onecli-agent <id> --host <bridge host>`
+  (host-side MCP bridges) or `--target google` (broker). Keys go straight into OneCLI; only hashes are kept.
+- **Agent tools** (`agent-tools/`): `nudges.ts` (Bun) — nudge record, numbered brief replies, auto-action
+  ledger with undo. Copy into `groups/<folder>/tools/`. Tests: run `bun test` inside the agent image.
+
 ## Rules for this install
 
 - Never set `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`; the subscription token lives in OneCLI only.
