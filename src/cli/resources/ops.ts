@@ -64,8 +64,9 @@ registerResource({
       args: [{ name: 'stack', type: 'number', required: true, description: 'Numeric Dockhand git stack id.' }],
       examples: ['ncl ops redeploy-stack --stack 24'],
       handler: async (args): Promise<string> => {
-        const id = Number(args.stack);
-        if (!Number.isInteger(id) || id <= 0) throw new Error('--stack must be a positive integer');
+        const raw = String(args.stack).trim();
+        if (!/^[1-9][0-9]{0,6}$/.test(raw)) throw new Error('--stack must be a positive integer (digits only)');
+        const id = Number(raw);
         return redeployStack(id);
       },
       formatHuman: (data) => String(data),

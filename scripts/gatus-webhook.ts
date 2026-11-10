@@ -66,6 +66,7 @@ const insertAlert = alertDb.prepare(
 );
 
 const lastTriggered = new Map<string, number>();
+const inFlight = new Set<string>();
 const pendingResolve = new Map<string, NodeJS.Timeout>();
 
 function sendToAgent(text: string): Promise<void> {
@@ -114,7 +115,13 @@ async function handleInner(body: Record<string, unknown>): Promise<string> {
     const last = lastTriggered.get(endpoint) ?? 0;
     if (Date.now() - last < REPEAT_MS) return 'repeat-suppressed';
     if (lastTriggered.size > 500) return 'dropped-too-many-endpoints';
-    await sendToAgent(format('triggered', endpoint, description, url));
+    if (inFlight.has(endpoint)) return 'repeat-suppressed';
+    inFlight.add(endpoint);
+    try {
+      await sendToAgent(format('triggered', endpoint, description, url));
+    } finally {
+      inFlight.delete(endpoint);
+    }
     lastTriggered.set(endpoint, Date.now()); // only after a successful send, so a failed send is retried
     return 'sent';
   }
