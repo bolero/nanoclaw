@@ -73,6 +73,13 @@ export type CommandDef<TArgs = unknown, TData = unknown> = {
    * throwing formatter is ignored — clients fall back to rendering `data`.
    */
   formatHuman?: (data: TData) => string;
+  /**
+   * Approval-gated commands only: runs on the host before an agent's request
+   * is held. Throw to refuse immediately (no card is sent). The returned lines
+   * are shown on the approval card, so the approver sees what the arguments
+   * resolve to (e.g. a stack id's name and host), not just raw ids.
+   */
+  preApproval?: (rawArgs: Record<string, unknown>) => Promise<string>;
 };
 
 const registry = new Map<string, CommandDef>();

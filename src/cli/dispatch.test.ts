@@ -1221,3 +1221,48 @@ describe('approval card question', () => {
     expect(heldQuestionLines()[2]).toContain('x'.repeat(1500));
   });
 });
+
+register({
+  name: 'ops-gated-test',
+  description: 'approval-gated test command with a pre-approval check',
+  resource: 'ops',
+  access: 'approval',
+  parseArgs: (raw) => raw,
+  preApproval: async (raw) => {
+    if (raw.target !== 'known') throw new Error(`unknown target ${String(raw.target)}`);
+    return 'Target: known-stack\nHost: test-host';
+  },
+  handler: async (args) => ({ ran: args }),
+});
+
+describe('preApproval hook', () => {
+  beforeEach(() => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'group' });
+    mockGetSession.mockReturnValue({ id: 's1', agent_group_id: 'g1', messaging_group_id: 'mg1' });
+    mockGetAgentGroup.mockReturnValue({ id: 'g1', name: 'Group One' });
+  });
+
+  it('refuses an invalid target immediately, without an approval card', async () => {
+    const resp = await dispatch({ id: '1', command: 'ops-gated-test', args: { target: 'nope' } }, agentCtx());
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) {
+      expect(resp.error.code).toBe('invalid-args');
+      expect(resp.error.message).toContain('unknown target nope');
+    }
+    expect(approvalState.requestApproval).not.toHaveBeenCalled();
+  });
+
+  it('adds the resolved description to the card for a valid target', async () => {
+    const resp = await dispatch({ id: '1', command: 'ops-gated-test', args: { target: 'known' } }, agentCtx());
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) expect(resp.error.code).toBe('approval-pending');
+    const { question } = approvalState.requestApproval.mock.calls[0][0] as { question: string };
+    expect(question.split('\n').slice(-2)).toEqual(['Target: known-stack', 'Host: test-host']);
+  });
+
+  it('does not run for help requests', async () => {
+    const resp = await dispatch({ id: '1', command: 'ops-gated-test', args: { help: true } }, agentCtx());
+    expect(resp.ok).toBe(true);
+    expect(approvalState.requestApproval).not.toHaveBeenCalled();
+  });
+});

@@ -57,6 +57,8 @@ export interface CustomOperation {
   handler: (args: Record<string, unknown>, ctx: CallerContext) => Promise<unknown>;
   /** Presentational renderer for human mode — see CommandDef.formatHuman. */
   formatHuman?: (data: unknown) => string;
+  /** Approval-gated only: validate + describe before the hold — see CommandDef.preApproval. */
+  preApproval?: (rawArgs: Record<string, unknown>) => Promise<string>;
 }
 
 export interface ResourceDef {
@@ -536,6 +538,7 @@ export function registerResource(def: ResourceDef): void {
           : (raw) => normalizeArgs(raw),
         handler: async (args, ctx) => op.handler(args as Record<string, unknown>, ctx),
         formatHuman: op.formatHuman,
+        preApproval: op.preApproval,
       });
     }
   }

@@ -158,6 +158,16 @@ export async function dispatch(
     if (!session) {
       return err(req.id, 'handler-error', 'Session not found.');
     }
+    // Validate and resolve the arguments before minting a card: an unknown
+    // target is refused outright, a known one is described on the card.
+    let resolved = '';
+    if (cmd.preApproval) {
+      try {
+        resolved = await cmd.preApproval(req.args);
+      } catch (e) {
+        return err(req.id, 'invalid-args', errMsg(e));
+      }
+    }
     const agentGroup = await getAgentGroup(ctx.agentGroupId);
     const agentName = agentGroup?.name ?? ctx.agentGroupId;
 
@@ -169,7 +179,12 @@ export async function dispatch(
       .join(' ');
     const commandLine = escapeInvisibles(`ncl ${req.command}${argSummary ? ' ' + argSummary : ''}`);
     const title = `CLI: ${req.command}`;
-    const question = `Agent ${quoteForCard(agentName)} wants to run:\n` + '```\n' + commandLine + '\n```';
+    const question =
+      `Agent ${quoteForCard(agentName)} wants to run:\n` +
+      '```\n' +
+      commandLine +
+      '\n```' +
+      (resolved ? '\n' + resolved.split('\n').map(escapeInvisibles).join('\n') : '');
     // The approver must see every argument; answer the agent now instead of
     // carding a command that can't be shown in full.
     const tooLong = cardQuestionTooLong(title, question);
