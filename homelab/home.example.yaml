@@ -1,0 +1,78 @@
+# Home assistant config (example). The real file lives at ~/.config/nanoclaw/home.yaml (mode 0600)
+# and is never committed. Loaded and validated by scripts/home-config.ts; unknown keys are errors.
+#
+# used_by: which agents may use a resource. "<agent>" = the resource's own access level,
+# "<agent>:read" = read-only even when the resource is writable.
+version: 1
+
+# Agent ids that may appear in used_by. Brokers map a caller key to one of these.
+agents: [bono, family, argus]
+
+google_accounts:
+  - id: personal
+    address: owner@example.com
+    scopes: [gmail.readonly, calendar.readonly]
+  - id: family-inbox
+    address: assistant-inbox@example.com
+    scopes:
+      - gmail.readonly
+      - calendar.events.owned
+      - calendar.calendarlist.readonly
+      - calendar.calendars.readonly
+
+mailboxes:
+  - id: personal
+    account: personal
+    mode: starred                 # only STARRED messages
+    used_by: [bono]
+  - id: family-inbox
+    account: family-inbox
+    mode: allowlisted-forwarders  # only mail whose authenticated outer sender is listed
+    forwarders: [owner@example.com, partner@example.com]
+    used_by: [family]
+
+calendars:
+  - id: personal
+    account: personal
+    calendar: primary             # Google calendar id, "primary", or the calendar's name
+    access: read
+    used_by: [bono]
+  - id: school
+    account: family-inbox
+    calendar: School
+    access: write
+    used_by: [family, "bono:read"]
+  - id: family
+    account: family-inbox
+    calendar: Family
+    access: write
+    used_by: [family, "bono:read"]
+
+reminders:
+  unrestricted: [bono]            # these agents see every list
+  lists:
+    - {id: kids, name: Kids, used_by: [family]}
+    - {id: family, name: Family, used_by: [family]}
+
+omnifocus:
+  used_by: [bono]
+
+notes:
+  unrestricted: [bono]
+  folders:
+    - {id: family, name: Family, used_by: [family]}
+
+# Where new items go, by kind. Unknown kind -> hold and ask; never a silent fallback.
+destinations:
+  school: {list: kids, calendar: school}
+  household: {list: family, calendar: family}
+  personal: {list: omnifocus-inbox}
+
+# What bono watches for stale/due tasks.
+personal_watch: [omnifocus, reminders]
+
+schedule:
+  quiet_hours: "21:00-07:00"
+  brief_time: "19:00"
+  stale_days: 21
+  nudge_cap: 3
