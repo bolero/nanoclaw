@@ -173,6 +173,29 @@ http
       res.writeHead(code, { 'content-type': 'text/plain' });
       res.end(msg + '\n');
     };
+    if (req.method === 'GET' && req.url === '/health') {
+      // Unauthenticated liveness for Gatus: the NanoClaw host socket and the read-only Dockhand proxy.
+      const probe = (open: () => net.Socket) =>
+        new Promise<boolean>((resolve) => {
+          const sock = open();
+          const done = (ok: boolean) => {
+            sock.destroy();
+            resolve(ok);
+          };
+          sock.setTimeout(2000, () => done(false));
+          sock.once('error', () => done(false));
+          sock.once('connect', () => done(true));
+        });
+      Promise.all([
+        probe(() => net.createConnection(SOCK)),
+        probe(() => net.createConnection({ host: '127.0.0.1', port: Number(process.env.PROXY_PORT ?? 8790) })),
+      ]).then(([host, proxy]) => {
+        const ok = host && proxy;
+        res.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ status: ok ? 'ok' : 'degraded', host: host ? 'ok' : 'down', proxy: proxy ? 'ok' : 'down' }) + '\n');
+      });
+      return;
+    }
     if (req.method !== 'POST' || req.url !== '/alert') return reply(404, 'not found');
     // `X-Gitlab-Token` is accepted too so a Gatus config written for Hermes works unchanged.
     const presented = String(req.headers['x-webhook-secret'] ?? req.headers['x-gitlab-token'] ?? '');
