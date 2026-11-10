@@ -28,6 +28,7 @@ function msg(id: string, from: string, ar: string[] = [AR_PASS], extra: Partial<
     id,
     snippet: `snippet ${id}`,
     labelIds: ['INBOX'],
+    internalDate: String(Date.parse('2026-11-10T11:00:00Z')),
     payload: {
       mimeType: 'text/plain',
       headers: [
@@ -189,6 +190,22 @@ describe('google broker', () => {
     const q = new URL(f.calls[0].url).searchParams.get('q');
     expect(q).toMatch(/^from:\(owner@example\.com OR partner@example\.com\) after:\d+$/);
     expect(await b.call('family', 'mail_new', { mailbox: 'family-inbox' })).toBe('No new mail in family-inbox.');
+  });
+
+  it('peek counts without consuming; first run skips old mail', async () => {
+    const now = Date.parse('2026-11-10T12:00:00Z');
+    const f = fakeGoogle([
+      msg('old', 'x@y.z', [], { labelIds: ['STARRED'], internalDate: String(now - 30 * 86_400_000) }),
+      msg('new', 'x@y.z', [], { labelIds: ['STARRED'], internalDate: String(now - 3_600_000) }),
+    ]);
+    const state = new MemState();
+    const b = broker(f, state);
+    expect(await b.call('bono', 'mail_new', { mailbox: 'personal', peek: true })).toBe('PEEK personal new=1');
+    expect(state.m.size).toBe(0);
+    const out = await b.call('bono', 'mail_new', { mailbox: 'personal' });
+    expect(out).toContain('subject new');
+    expect(out).not.toContain('subject old');
+    expect(await b.call('bono', 'mail_new', { mailbox: 'personal', peek: true })).toBe('PEEK personal new=0');
   });
 
   it('starred mailbox only sees starred mail; mail_get hides the rest', async () => {
