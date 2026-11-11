@@ -220,6 +220,12 @@ describe('google broker', () => {
     expect(got).toContain('body of s1');
     expect(got).toContain('‹script›'); // tag delimiters neutralised inside the data block
     await expect(b.call('bono', 'mail_get', { mailbox: 'personal', id: 'n1' })).rejects.toThrow('not found');
+    // An owner-requested search grants opening its results for an hour (same agent only).
+    await b.call('bono', 'mail_search', { mailbox: 'personal', query: 'trip' });
+    await expect(b.call('bono', 'mail_get', { mailbox: 'personal', id: 'n1' })).resolves.toContain('body of n1');
+    await expect(b.call('bono', 'mail_search', { mailbox: 'personal', query: 'x', max: 26 })).rejects.toThrow(
+      /max must/,
+    );
     await expect(b.call('bono', 'mail_get', { mailbox: 'personal', id: '../x' })).rejects.toThrow('id is invalid');
   });
 

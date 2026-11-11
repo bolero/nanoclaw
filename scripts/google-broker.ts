@@ -44,6 +44,9 @@ const CAL = 'https://www.googleapis.com/calendar/v3';
 const BODY_MAX = 20_000;
 const NEW_MAX = 20;
 const SEARCH_MAX = 10;
+const SEARCH_MAX_LIMIT = 25;
+/** Messages an agent found with mail_search may be opened for this long (owner-requested searches). */
+const SEARCH_GRANT_MS = 60 * 60 * 1000;
 const SEEN_KEEP = 1000;
 const FIRST_LOOKBACK_DAYS = 3;
 
@@ -239,10 +242,14 @@ export const TOOLS = [
   {
     name: 'mail_search',
     description:
-      'Search a mailbox (Gmail query syntax, max 10 results, headers and snippet only). Use only when the owner explicitly asks to find an email.',
+      'Search a mailbox (Gmail query syntax, headers and snippet; default 10, max 25 results). Use only when the owner explicitly asks to find or work with emails. Messages it returns can then be opened with mail_get and their attachments read or archived, for one hour.',
     inputSchema: {
       type: 'object',
-      properties: { mailbox: { type: 'string' }, query: { type: 'string' } },
+      properties: {
+        mailbox: { type: 'string' },
+        query: { type: 'string' },
+        max: { type: 'number', description: 'results to return, 1-25 (default 10)' },
+      },
       required: ['mailbox', 'query'],
     },
   },
@@ -343,6 +350,7 @@ interface CalEvent {
 
 export class GoogleBroker {
   private calIds = new Map<string, string>();
+  private searchGrants = new Map<string, number>();
 
   constructor(
     private cfg: () => HomeConfig,
@@ -384,7 +392,12 @@ export class GoogleBroker {
   }
 
   /** Whether this message is inside the mailbox's mode boundary. */
-  private visible(mb: Mailbox, msg: GmailMessage): boolean {
+  /** Inside the mailbox boundary: its mode, or (for an explicit open) a recent search by this agent. */
+  private visible(mb: Mailbox, msg: GmailMessage, openedBy?: string): boolean {
+    if (openedBy) {
+      const until = this.searchGrants.get(`${mb.id}:${openedBy}:${msg.id}`);
+      if (until && until > this.now()) return true;
+    }
     if (mb.mode === 'starred') return (msg.labelIds ?? []).includes('STARRED');
     return checkForwarder(msg, mb.forwarders).ok;
   }
@@ -443,7 +456,7 @@ export class GoogleBroker {
   async mailGet(agent: string, args: Record<string, unknown>): Promise<string> {
     const mb = this.mailbox(str(args, 'mailbox', 64)!, agent);
     const msg = await this.message(mb, str(args, 'id', 128)!, 'full');
-    if (!this.visible(mb, msg)) throw new ToolError('not found');
+    if (!this.visible(mb, msg, agent)) throw new ToolError('not found');
     const { text, attachments } = extractBody(msg.payload);
     const att = attachments
       .map((a, i) => `${i + 1}. ${cleanLine(a.name, 120)} (${a.type || 'unknown'}, ${a.size} bytes)`)
@@ -465,7 +478,7 @@ export class GoogleBroker {
   private async attachment(agent: string, args: Record<string, unknown>) {
     const mb = this.mailbox(str(args, 'mailbox', 64)!, agent);
     const msg = await this.message(mb, str(args, 'id', 128)!, 'full');
-    if (!this.visible(mb, msg)) throw new ToolError('not found');
+    if (!this.visible(mb, msg, agent)) throw new ToolError('not found');
     const n = Number(args.attachment);
     const list = extractBody(msg.payload).attachments;
     if (!Number.isInteger(n) || n < 1 || n > list.length) throw new ToolError(`attachment must be 1-${list.length}`);
@@ -533,16 +546,24 @@ export class GoogleBroker {
   async mailSearch(agent: string, args: Record<string, unknown>): Promise<string> {
     const mb = this.mailbox(str(args, 'mailbox', 64)!, agent);
     const query = str(args, 'query', 200)!;
+    const max = args.max === undefined ? SEARCH_MAX : Number(args.max);
+    if (!Number.isInteger(max) || max < 1 || max > SEARCH_MAX_LIMIT)
+      throw new ToolError(`max must be 1-${SEARCH_MAX_LIMIT}`);
     const q = mb.mode === 'starred' ? query : `${this.forwarderQuery(mb)} (${query})`;
-    const ids = await this.list(mb, q, SEARCH_MAX * 2);
+    const ids = await this.list(mb, q, Math.min(50, max * 2));
     const out: string[] = [];
+    const until = this.now() + SEARCH_GRANT_MS;
     for (const id of ids) {
-      if (out.length >= SEARCH_MAX) break;
+      if (out.length >= max) break;
       const msg = await this.message(mb, id, 'metadata');
       if (mb.mode === 'allowlisted-forwarders' && !this.visible(mb, msg)) continue;
+      this.searchGrants.set(`${mb.id}:${agent}:${msg.id}`, until);
       out.push(frameMail(this.summary(msg)));
     }
-    return out.length ? `${out.length} result(s):\n\n${out.join('\n\n')}` : 'No matching mail.';
+    for (const [k, t] of this.searchGrants) if (t <= this.now()) this.searchGrants.delete(k);
+    const more =
+      ids.length > out.length && out.length >= max ? '\n(more results may exist; narrow the query or raise max)' : '';
+    return out.length ? `${out.length} result(s):\n\n${out.join('\n\n')}${more}` : 'No matching mail.';
   }
 
   private async calendar(id: string, agent: string, need: 'read' | 'write') {
