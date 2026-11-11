@@ -125,7 +125,7 @@ export function htmlToText(html: string): string {
 
 export interface ExtractedBody {
   text: string;
-  attachments: { name: string; size: number; type: string }[];
+  attachments: { name: string; size: number; type: string; attachmentId?: string; data?: string }[];
 }
 
 /** Prefer text/plain anywhere in the tree; fall back to text/html converted to text. */
@@ -136,7 +136,13 @@ export function extractBody(payload: GmailPart | undefined): ExtractedBody {
   const walk = (p: GmailPart | undefined, depth: number): void => {
     if (!p || depth > 20) return;
     if (p.filename) {
-      attachments.push({ name: p.filename, size: p.body?.size ?? 0, type: p.mimeType ?? '' });
+      attachments.push({
+        name: p.filename,
+        size: p.body?.size ?? 0,
+        type: p.mimeType ?? '',
+        ...(p.body?.attachmentId ? { attachmentId: p.body.attachmentId } : {}),
+        ...(p.body?.data ? { data: p.body.data } : {}),
+      });
       return;
     }
     if (p.mimeType === 'text/plain' && p.body?.data) plain.push(b64url(p.body.data));

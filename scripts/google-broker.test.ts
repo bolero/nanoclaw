@@ -91,7 +91,9 @@ describe('google-mail helpers', () => {
       ],
     });
     expect(body.text).toBe('Hello there');
-    expect(body.attachments).toEqual([{ name: 'permission slip.pdf', size: 1234, type: 'application/pdf' }]);
+    expect(body.attachments).toEqual([
+      { name: 'permission slip.pdf', size: 1234, type: 'application/pdf', attachmentId: 'a' },
+    ]);
     expect(htmlToText('a<br>b&#39;s &amp; c')).toBe("a\nb's & c");
   });
 });
@@ -297,6 +299,9 @@ describe('google broker', () => {
       'cal_find',
       'cal_create',
       'cal_delete_own',
+      'mail_attachment_text',
+      'mail_attachment_archive',
+      'archive_status',
     ]);
     expect(list.result.tools.some((t) => /send|modify|label|trash/.test(t.name))).toBe(false);
     const bad = (await handleRpc(b, 'bono', {
@@ -362,5 +367,96 @@ describe('google tokens', () => {
     await expect(t.token('personal', 'gmail.readonly')).rejects.toThrow(/needs consent/);
     expect(t.status().personal).toBe('needs_consent');
     expect(fs.statSync(path.join(dir, 'personal.json')).mode & 0o777).toBe(0o600);
+  });
+});
+
+describe('attachments and Paperless', () => {
+  const pdfBytes = Buffer.from('%PDF-1.4 fake slip');
+  const withAttachment = (labels: string[]) =>
+    msg('p1', 'x@y.z', [], {
+      labelIds: labels,
+      payload: {
+        mimeType: 'multipart/mixed',
+        headers: [{ name: 'From', value: 'x@y.z' }],
+        parts: [
+          { mimeType: 'text/plain', body: { data: b64('see attached') } },
+          { mimeType: 'application/pdf', filename: 'slip.pdf', body: { size: pdfBytes.length, attachmentId: 'att1' } },
+          { mimeType: 'application/zip', filename: 'x.zip', body: { size: 10, attachmentId: 'att2' } },
+        ],
+      },
+    });
+  const googleWithAtt = (m: GmailMessage) => {
+    const f = fakeGoogle([m]);
+    const inner = f.fetchFn;
+    f.fetchFn = (async (u: string | URL, init?: RequestInit) =>
+      String(u).includes('/attachments/att1')
+        ? new Response(JSON.stringify({ data: pdfBytes.toString('base64url') }), { status: 200 })
+        : inner(u, init)) as typeof fetch;
+    return f;
+  };
+  const seen: { ext: string; page: number; ocr: boolean; bytes: string }[] = [];
+  const doctext = async (data: Buffer, ext: string, page: number, ocr: boolean) => {
+    seen.push({ ext, page, ocr, bytes: data.toString() });
+    return { kind: 'pdf', page, page_count: 2, method: 'ocr', text: 'Sign by <Nov 16>' };
+  };
+
+  it('extracts attachment text through doctext, framed, only for visible mail', async () => {
+    const f = googleWithAtt(withAttachment(['STARRED']));
+    const b = new GoogleBroker(() => cfg, tokens, new MemState(), f.fetchFn, Date.now, doctext);
+    const got = await b.call('bono', 'mail_get', { mailbox: 'personal', id: 'p1' });
+    expect(got).toContain('1. slip.pdf (application/pdf');
+    const t = await b.call('bono', 'mail_attachment_text', { mailbox: 'personal', id: 'p1', attachment: 1 });
+    expect(t).toContain('<mail_data>');
+    expect(t).toContain('Sign by ‹Nov 16›');
+    expect(t).toContain('on-device OCR');
+    expect(t).toContain('page 2 of 2 available');
+    expect(seen.at(-1)).toEqual({ ext: '.pdf', page: 1, ocr: false, bytes: '%PDF-1.4 fake slip' });
+    await expect(
+      b.call('bono', 'mail_attachment_text', { mailbox: 'personal', id: 'p1', attachment: 2 }),
+    ).rejects.toThrow(/not supported/);
+    await expect(
+      b.call('bono', 'mail_attachment_text', { mailbox: 'personal', id: 'p1', attachment: 3 }),
+    ).rejects.toThrow(/1-2/);
+    const hidden = googleWithAtt(withAttachment(['INBOX']));
+    const b2 = new GoogleBroker(() => cfg, tokens, new MemState(), hidden.fetchFn, Date.now, doctext);
+    await expect(
+      b2.call('bono', 'mail_attachment_text', { mailbox: 'personal', id: 'p1', attachment: 1 }),
+    ).rejects.toThrow('not found');
+  });
+
+  it('archives to Paperless once, reserving before POST', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pl-'));
+    fs.writeFileSync(
+      path.join(dir, 'paperless.json'),
+      JSON.stringify({ base_url: 'https://paperless.test', token: 'T', user_id: 7 }),
+    );
+    const posts: string[] = [];
+    let docs: { id: number; owner: number }[] = [];
+    const plFetch = (async (u: string | URL, init?: RequestInit) => {
+      const url = String(u);
+      expect((init?.headers as Record<string, string>).authorization).toBe('Token T');
+      if (url.includes('/post_document/')) {
+        posts.push(url);
+        docs = [{ id: 42, owner: 7 }];
+        return new Response(JSON.stringify('0f8fad5b-d9cb-469f-a165-70867728950e'), { status: 200 });
+      }
+      return new Response(JSON.stringify({ results: docs }), { status: 200 });
+    }) as typeof fetch;
+    const { PaperlessArchive } = await import('./broker-docs.js');
+    const pl = new PaperlessArchive(path.join(dir, 'paperless.json'), path.join(dir, 'ledger.json'), plFetch);
+    const f = googleWithAtt(withAttachment(['STARRED']));
+    const b = new GoogleBroker(() => cfg, tokens, new MemState(), f.fetchFn, Date.now, doctext, pl);
+    const first = await b.call('bono', 'mail_attachment_archive', { mailbox: 'personal', id: 'p1', attachment: 1 });
+    expect(first).toContain('https://paperless.test/documents/42/details');
+    const again = await b.call('bono', 'mail_attachment_archive', { mailbox: 'personal', id: 'p1', attachment: 1 });
+    expect(again).toContain('/documents/42/');
+    expect(posts).toHaveLength(1);
+    expect(fs.statSync(path.join(dir, 'ledger.json')).mode & 0o777).toBe(0o600);
+
+    const unconfigured = new PaperlessArchive(path.join(dir, 'missing.json'), path.join(dir, 'l2.json'), plFetch);
+    const b3 = new GoogleBroker(() => cfg, tokens, new MemState(), f.fetchFn, Date.now, doctext, unconfigured);
+    await expect(
+      b3.call('bono', 'mail_attachment_archive', { mailbox: 'personal', id: 'p1', attachment: 1 }),
+    ).rejects.toThrow(/not configured/);
   });
 });
