@@ -48,7 +48,8 @@ export interface HomeConfig {
   calendars: Calendar[];
   reminders: { unrestricted: string[]; lists: NamedItem[] };
   omnifocus: { used_by: UsedBy };
-  notes: { unrestricted: string[]; folders: NamedItem[] };
+  /** read_all: agents that read every folder but write only in folders they are used_by (not :read). */
+  notes: { unrestricted: string[]; read_all: string[]; folders: NamedItem[] };
   destinations: Record<string, Destination>;
   personal_watch: ('omnifocus' | 'reminders')[];
   schedule: {
@@ -241,12 +242,17 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
   const of = v.obj(top.omnifocus, 'omnifocus', ['used_by']);
   const omnifocus = { used_by: usedBy(of.used_by, 'omnifocus.used_by') };
 
-  const nt = v.obj(top.notes, 'notes', ['unrestricted', 'folders']);
+  const nt = v.obj(top.notes, 'notes', ['unrestricted', 'read_all', 'folders'], ['unrestricted', 'folders']);
   const notes = {
     unrestricted: v.strs(nt.unrestricted, 'notes.unrestricted'),
+    read_all: nt.read_all === undefined ? [] : v.strs(nt.read_all, 'notes.read_all'),
     folders: namedItems(nt.folders, 'notes.folders'),
   };
   notes.unrestricted.forEach((a, i) => agentRef(a, `notes.unrestricted[${i}]`));
+  notes.read_all.forEach((a, i) => {
+    agentRef(a, `notes.read_all[${i}]`);
+    if (notes.unrestricted.includes(a)) v.err(`notes.read_all[${i}]`, `"${a}" is also in notes.unrestricted`);
+  });
 
   const listIds = new Set(reminders.lists.map((l) => l.id));
   const calIds = new Set(calendars.map((c) => c.id));
@@ -346,10 +352,16 @@ export function reminderListsFor(cfg: HomeConfig, agent: string): string[] | nul
   return cfg.reminders.lists.filter((l) => accessFor(l.used_by, agent) !== 'none').map((l) => l.name);
 }
 
-/** Notes folder names an agent may use; null = unrestricted. */
+/** Notes folder names an agent may use; null = unrestricted. For read_all agents: the folders it may write. */
 export function noteFoldersFor(cfg: HomeConfig, agent: string): string[] | null {
   if (cfg.notes.unrestricted.includes(agent)) return null;
-  return cfg.notes.folders.filter((f) => accessFor(f.used_by, agent) !== 'none').map((f) => f.name);
+  const need = cfg.notes.read_all.includes(agent) ? 'write' : 'read';
+  return cfg.notes.folders
+    .filter((f) => {
+      const a = accessFor(f.used_by, agent);
+      return need === 'write' ? a === 'write' : a !== 'none';
+    })
+    .map((f) => f.name);
 }
 
 // CLI: `pnpm exec tsx scripts/home-config.ts [file]` validates and prints a per-agent summary (no addresses).
@@ -364,7 +376,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
       const rl = reminderListsFor(cfg, a);
       const nf = noteFoldersFor(cfg, a);
       console.log(
-        `${a}: mailboxes=[${mb}] calendars=[${cal}] reminders=${rl ? `[${rl}]` : 'all'} notes=${nf ? `[${nf}]` : 'all'} omnifocus=${accessFor(cfg.omnifocus.used_by, a)}`,
+        `${a}: mailboxes=[${mb}] calendars=[${cal}] reminders=${rl ? `[${rl}]` : 'all'} notes=${nf ? (cfg.notes.read_all.includes(a) ? `read all, write [${nf}]` : `[${nf}]`) : 'all'} omnifocus=${accessFor(cfg.omnifocus.used_by, a)}`,
       );
     }
     console.log('OK');

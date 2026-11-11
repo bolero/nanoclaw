@@ -58,9 +58,10 @@ omnifocus:
   used_by: [bono]
 
 notes:
-  unrestricted: [bono]
+  unrestricted: []                # these agents read and write every folder
+  read_all: [bono]                # read every folder; create/edit/move/delete only where used_by allows write
   folders:
-    - {id: family, name: Family, used_by: [family]}
+    - {id: family, name: Family, used_by: [family, bono]}
 
 # Where new items go, by kind. Unknown kind -> hold and ask; never a silent fallback.
 destinations:

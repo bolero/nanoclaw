@@ -38,8 +38,10 @@ export interface BridgePolicy {
   callers: Record<string, string>;
   /** agent -> allowed Reminders list names, or null for all lists */
   reminders: Record<string, string[] | null>;
-  /** agent -> allowed Notes folder names, or null for all folders */
+  /** agent -> allowed Notes folder names, or null for all folders (for notes_read_all agents: writable folders) */
   notes: Record<string, string[] | null>;
+  /** agents that read every Notes folder and write only in their `notes` folders */
+  notes_read_all: string[];
   /** agents allowed to use OmniFocus */
   omnifocus: string[];
 }
@@ -60,7 +62,7 @@ export function buildPolicy(cfg: HomeConfig, callers: Callers, now = new Date())
     const rl = reminderListsFor(cfg, a);
     if (rl === null || rl.length) reminders[a] = rl;
     const nf = noteFoldersFor(cfg, a);
-    if (nf === null || nf.length) notes[a] = nf;
+    if (nf === null || nf.length || cfg.notes.read_all.includes(a)) notes[a] = nf;
   }
   return {
     version: 1,
@@ -68,6 +70,7 @@ export function buildPolicy(cfg: HomeConfig, callers: Callers, now = new Date())
     callers: byHash,
     reminders,
     notes,
+    notes_read_all: cfg.agents.filter((a) => cfg.notes.read_all.includes(a)),
     omnifocus: cfg.agents.filter((a) => accessFor(cfg.omnifocus.used_by, a) !== 'none'),
   };
 }

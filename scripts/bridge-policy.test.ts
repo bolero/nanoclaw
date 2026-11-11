@@ -12,7 +12,8 @@ describe('bridge policy', () => {
     const p = buildPolicy(cfg, { bono: sha256('k1'), family: sha256('k2') }, new Date('2026-11-10T00:00:00Z'));
     expect(p.callers).toEqual({ [sha256('k1')]: 'bono', [sha256('k2')]: 'family' });
     expect(p.reminders).toEqual({ bono: null, family: ['Kids', 'Family'] });
-    expect(p.notes).toEqual({ bono: null, family: ['Family'] });
+    expect(p.notes).toEqual({ bono: ['Family'], family: ['Family'] });
+    expect(p.notes_read_all).toEqual(['bono']);
     expect(p.omnifocus).toEqual(['bono']);
     expect(p.reminders.argus).toBeUndefined();
   });

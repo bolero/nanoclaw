@@ -116,6 +116,15 @@ describe('home config', () => {
     expect(reminderListsFor(cfg, 'bono')).toBeNull();
     expect(reminderListsFor(cfg, 'argus')).toEqual([]);
     expect(noteFoldersFor(cfg, 'family')).toEqual(['Family']);
+    // read_all agents: the result is the folders they may WRITE; ":read" entries are excluded
+    expect(noteFoldersFor(cfg, 'bono')).toEqual(['Family']);
+    const ro = parseHomeConfig(
+      fs.readFileSync(path.join(__dirname, '..', 'homelab', 'home.example.yaml'), 'utf8').replace(
+        'used_by: [family, bono]}',
+        'used_by: [family, "bono:read"]}',
+      ),
+    );
+    expect(noteFoldersFor(ro, 'bono')).toEqual([]);
     expect(accessFor(cfg.omnifocus.used_by, 'family')).toBe('none');
   });
 
