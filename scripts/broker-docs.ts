@@ -127,11 +127,15 @@ export class PaperlessArchive {
     return res.json();
   }
 
-  private async findByMd5(c: PaperlessConfig, md5: string): Promise<number | null> {
-    const q = new URLSearchParams({ checksum__iexact: md5, page_size: '5', fields: 'id,owner' });
-    const r = (await this.api(c, `/api/documents/?${q}`)) as { results?: { id: number; owner: number | null }[] };
-    const hit = (r.results ?? []).find((d) => typeof d.id === 'number' && d.owner === c.user_id);
-    return hit ? hit.id : null;
+  /** Paperless 3.x stores SHA-256 checksums (older versions MD5); try both. */
+  private async findByChecksum(c: PaperlessConfig, sums: string[]): Promise<number | null> {
+    for (const sum of sums) {
+      const q = new URLSearchParams({ checksum__iexact: sum, page_size: '5', fields: 'id,owner' });
+      const r = (await this.api(c, `/api/documents/?${q}`)) as { results?: { id: number; owner: number | null }[] };
+      const hit = (r.results ?? []).find((d) => typeof d.id === 'number' && d.owner === c.user_id);
+      if (hit) return hit.id;
+    }
+    return null;
   }
 
   private view(c: PaperlessConfig, receipt: string, r: Receipt): string {
@@ -149,7 +153,7 @@ export class PaperlessArchive {
     if (!key) throw new Error('receipt not found');
     const r = l[key];
     if (r.state !== 'archived') {
-      const id = await this.findByMd5(c, r.md5);
+      const id = await this.findByChecksum(c, [key, r.md5]);
       if (id) {
         r.state = 'archived';
         r.document = id;
@@ -168,7 +172,7 @@ export class PaperlessArchive {
     const name = filename.replace(/[^A-Za-z0-9_. -]/g, '_').slice(0, 150) || `email-document${DOC_TYPES[mime]}`;
     const l = this.ledger();
     if (l[digest]) return this.status(digest);
-    const existing = await this.findByMd5(c, md5);
+    const existing = await this.findByChecksum(c, [digest, md5]);
     if (existing) {
       l[digest] = { state: 'archived', md5, document: existing, filename: name, at: new Date().toISOString() };
       this.save(l);

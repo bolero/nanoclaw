@@ -446,7 +446,9 @@ describe('attachments and Paperless', () => {
         docs = [{ id: 42, owner: 7 }];
         return new Response(JSON.stringify('0f8fad5b-d9cb-469f-a165-70867728950e'), { status: 200 });
       }
-      return new Response(JSON.stringify({ results: docs }), { status: 200 });
+      // Paperless 3.x matches on SHA-256; an MD5 query finds nothing.
+      const sum = new URL(url).searchParams.get('checksum__iexact') ?? '';
+      return new Response(JSON.stringify({ results: sum.length === 64 ? docs : [] }), { status: 200 });
     }) as typeof fetch;
     const { PaperlessArchive } = await import('./broker-docs.js');
     const pl = new PaperlessArchive(path.join(dir, 'paperless.json'), path.join(dir, 'ledger.json'), plFetch);
