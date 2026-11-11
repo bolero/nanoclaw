@@ -43,6 +43,8 @@ const CAL = 'https://www.googleapis.com/calendar/v3';
 
 const BODY_MAX = 20_000;
 const NEW_MAX = 20;
+/** Agents whose Paperless uploads are always shared with the Family group (household documents). */
+const AUTO_SHARE_AGENTS = (process.env.PAPERLESS_AUTO_SHARE_AGENTS ?? 'family').split(',').filter(Boolean);
 const SEARCH_MAX = 10;
 const SEARCH_MAX_LIMIT = 25;
 /** Messages an agent found with mail_search may be opened for this long (owner-requested searches). */
@@ -325,9 +327,18 @@ export const TOOLS = [
         id: { type: 'string' },
         attachment: { type: 'number' },
         title: { type: 'string', description: 'optional document title' },
+        share_with_family: {
+          type: 'boolean',
+          description: 'let the Family group view it (only when asked; family-assistant uploads are always shared)',
+        },
       },
       required: ['mailbox', 'id', 'attachment'],
     },
+  },
+  {
+    name: 'archive_share',
+    description: 'Share an earlier Paperless upload (by receipt) with the Family group, view only. Only when asked.',
+    inputSchema: { type: 'object', properties: { receipt: { type: 'string' } }, required: ['receipt'] },
   },
   {
     name: 'archive_status',
@@ -529,7 +540,16 @@ export class GoogleBroker {
     const { name, mime, data } = await this.attachment(agent, args);
     const title = args.title === undefined ? undefined : cleanLine(str(args, 'title', 128), 128);
     try {
-      return await this.paperless.archive(data, name, mime, title);
+      const share = args.share_with_family === true || AUTO_SHARE_AGENTS.includes(agent);
+      return await this.paperless.archive(data, name, mime, title, share);
+    } catch (e) {
+      throw new ToolError((e as Error).message);
+    }
+  }
+
+  async archiveShare(_agent: string, args: Record<string, unknown>): Promise<string> {
+    try {
+      return await this.paperless.share(str(args, 'receipt', 64)!);
     } catch (e) {
       throw new ToolError((e as Error).message);
     }
@@ -708,6 +728,8 @@ export class GoogleBroker {
         return this.mailAttachmentText(agent, args);
       case 'mail_attachment_archive':
         return this.mailAttachmentArchive(agent, args);
+      case 'archive_share':
+        return this.archiveShare(agent, args);
       case 'archive_status':
         return this.archiveStatus(agent, args);
       default:

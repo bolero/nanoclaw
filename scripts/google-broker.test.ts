@@ -307,6 +307,7 @@ describe('google broker', () => {
       'cal_delete_own',
       'mail_attachment_text',
       'mail_attachment_archive',
+      'archive_share',
       'archive_status',
     ]);
     expect(list.result.tools.some((t) => /send|modify|label|trash/.test(t.name))).toBe(false);
@@ -466,5 +467,51 @@ describe('attachments and Paperless', () => {
     await expect(
       b3.call('bono', 'mail_attachment_archive', { mailbox: 'personal', id: 'p1', attachment: 1 }),
     ).rejects.toThrow(/not configured/);
+  });
+
+  it('shares with the Family group only when asked (or for auto-share agents)', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pl-'));
+    const cfgFile = path.join(dir, 'paperless.json');
+    fs.writeFileSync(
+      cfgFile,
+      JSON.stringify({ base_url: 'https://paperless.test', token: 'T', user_id: 7, family_group_id: 3 }),
+    );
+    const patches: unknown[] = [];
+    const plFetch = (async (u: string | URL, init?: RequestInit) => {
+      const url = String(u);
+      if (url.includes('/post_document/'))
+        return new Response(JSON.stringify('0f8fad5b-d9cb-469f-a165-70867728950e'), { status: 200 });
+      if (init?.method === 'PATCH') {
+        patches.push(JSON.parse(String(init.body)));
+        return new Response('{}', { status: 200 });
+      }
+      return new Response(JSON.stringify({ results: [{ id: 42, owner: 7 }] }), { status: 200 });
+    }) as typeof fetch;
+    const { PaperlessArchive } = await import('./broker-docs.js');
+    const pl = new PaperlessArchive(cfgFile, path.join(dir, 'ledger.json'), plFetch);
+    const f = googleWithAtt(withAttachment(['STARRED']));
+    const b = new GoogleBroker(() => cfg, tokens, new MemState(), f.fetchFn, Date.now, doctext, pl);
+    const priv = await b.call('bono', 'mail_attachment_archive', { mailbox: 'personal', id: 'p1', attachment: 1 });
+    expect(priv).not.toContain('shared');
+    expect(patches).toHaveLength(0);
+    const receipt = priv.match(/receipt ([a-f0-9]{12})/)![1];
+    const shared = await b.call('bono', 'archive_share', { receipt });
+    expect(shared).toContain('shared with Family');
+    expect(patches).toEqual([
+      { set_permissions: { view: { users: [], groups: [3] }, change: { users: [], groups: [] } } },
+    ]);
+    await b.call('bono', 'archive_share', { receipt });
+    expect(patches).toHaveLength(1); // idempotent
+
+    fs.writeFileSync(cfgFile, JSON.stringify({ base_url: 'https://paperless.test', token: 'T', user_id: 7 }));
+    const pl2 = new PaperlessArchive(cfgFile, path.join(dir, 'ledger2.json'), plFetch);
+    const b2 = new GoogleBroker(() => cfg, tokens, new MemState(), f.fetchFn, Date.now, doctext, pl2);
+    const pending = await b2.call('bono', 'mail_attachment_archive', {
+      mailbox: 'personal',
+      id: 'p1',
+      attachment: 1,
+      share_with_family: true,
+    });
+    expect(pending).toContain('Not shared yet: sharing is not set up yet');
   });
 });

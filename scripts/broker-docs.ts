@@ -71,6 +71,8 @@ interface PaperlessConfig {
   base_url: string;
   token: string;
   user_id: number;
+  /** Paperless group documents are shared with (view only); set by share-setup.sh */
+  family_group_id?: number;
 }
 
 interface Receipt {
@@ -80,6 +82,9 @@ interface Receipt {
   document?: number;
   filename: string;
   at: string;
+  /** share with the Family group (view) once Paperless has the document */
+  share?: boolean;
+  shared?: boolean;
 }
 
 export class PaperlessArchive {
@@ -138,9 +143,24 @@ export class PaperlessArchive {
     return null;
   }
 
+  /** Give the Family group view access to an archived document we own (idempotent). */
+  private async applyShare(c: PaperlessConfig, r: Receipt): Promise<void> {
+    if (!r.share || r.shared || r.state !== 'archived' || !r.document) return;
+    if (!c.family_group_id) throw new Error('sharing is not set up yet (owner runs share-setup.sh)');
+    await this.api(c, `/api/documents/${r.document}/`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        set_permissions: { view: { users: [], groups: [c.family_group_id] }, change: { users: [], groups: [] } },
+      }),
+    });
+    r.shared = true;
+  }
+
   private view(c: PaperlessConfig, receipt: string, r: Receipt): string {
     if (r.state === 'archived' && r.document) {
-      return `Archived "${r.filename}" in Paperless: ${c.base_url}/documents/${r.document}/details (receipt ${receipt.slice(0, 12)})`;
+      const sh = r.shared ? ', shared with Family' : r.share ? ', will be shared with Family' : '';
+      return `Archived "${r.filename}" in Paperless${sh}: ${c.base_url}/documents/${r.document}/details (receipt ${receipt.slice(0, 12)})`;
     }
     return `Upload of "${r.filename}" is ${r.state}; Paperless is still processing it. Check later with archive_status receipt ${receipt.slice(0, 12)}. Do not upload it again.`;
   }
@@ -160,10 +180,27 @@ export class PaperlessArchive {
         this.save(l);
       }
     }
+    try {
+      await this.applyShare(c, r);
+      this.save(l);
+    } catch (e) {
+      return `${this.view(c, key, r)}\nNot shared yet: ${(e as Error).message}`;
+    }
     return this.view(c, key, r);
   }
 
-  async archive(data: Buffer, filename: string, mime: string, title?: string): Promise<string> {
+  /** Mark an earlier upload for sharing with the Family group and apply it when possible. */
+  async share(receiptPrefix: string): Promise<string> {
+    if (!/^[a-f0-9]{8,64}$/.test(receiptPrefix)) throw new Error('receipt is invalid');
+    const l = this.ledger();
+    const key = Object.keys(l).find((k) => k.startsWith(receiptPrefix));
+    if (!key) throw new Error('receipt not found');
+    l[key].share = true;
+    this.save(l);
+    return this.status(key);
+  }
+
+  async archive(data: Buffer, filename: string, mime: string, title?: string, share = false): Promise<string> {
     const c = this.config();
     if (!DOC_TYPES[mime]) throw new Error('only PDFs and images can be archived');
     if (data.length === 0 || data.length > DOC_MAX_BYTES) throw new Error('file is empty or larger than 25 MB');
@@ -171,15 +208,21 @@ export class PaperlessArchive {
     const md5 = crypto.createHash('md5').update(data).digest('hex');
     const name = filename.replace(/[^A-Za-z0-9_. -]/g, '_').slice(0, 150) || `email-document${DOC_TYPES[mime]}`;
     const l = this.ledger();
-    if (l[digest]) return this.status(digest);
+    if (l[digest]) {
+      if (share && !l[digest].share) {
+        l[digest].share = true;
+        this.save(l);
+      }
+      return this.status(digest);
+    }
     const existing = await this.findByChecksum(c, [digest, md5]);
     if (existing) {
-      l[digest] = { state: 'archived', md5, document: existing, filename: name, at: new Date().toISOString() };
+      l[digest] = { state: 'archived', md5, document: existing, filename: name, at: new Date().toISOString(), share };
       this.save(l);
-      return this.view(c, digest, l[digest]);
+      return this.status(digest);
     }
     // Reserve before POST: a lost reply must never cause a second upload.
-    l[digest] = { state: 'unconfirmed', md5, filename: name, at: new Date().toISOString() };
+    l[digest] = { state: 'unconfirmed', md5, filename: name, at: new Date().toISOString(), share };
     this.save(l);
     const form = new FormData();
     form.append('document', new Blob([new Uint8Array(data)], { type: mime }), name);
