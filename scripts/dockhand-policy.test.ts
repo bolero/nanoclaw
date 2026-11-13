@@ -17,6 +17,9 @@ describe('dockhand proxy policy', () => {
     '/api/git/stacks',
     '/api/git/stacks/25',
     '/api/activity?environmentId=3&limit=20',
+    '/api/containers?env=3',
+    '/api/containers/pending-updates?env=4',
+    '/api/containers/check-updates?env=1',
   ])('allows %s', (url) => expect(ok(url)).toBe(true));
 
   it.each([
@@ -40,10 +43,14 @@ describe('dockhand proxy policy', () => {
     '/api/activity?limit=99999',
     '/api/activity?environmentId=1&environmentId=2',
     '/api/containers/a\\b/logs',
+    '/api/containers/pending-updates?env=3&containerId=abc',
+    '/api/containers/batch-update?env=3',
   ])('refuses %s', (url) => expect(ok(url)).toBe(false));
 
   it('refuses non-read methods', () => {
     expect(checkRequest('POST', '/api/git/stacks/25')).toMatchObject({ ok: false, code: 405 });
+    expect(checkRequest('POST', '/api/containers/check-updates?env=3')).toMatchObject({ ok: false, code: 405 });
+    expect(checkRequest('DELETE', '/api/containers/pending-updates?env=3')).toMatchObject({ ok: false, code: 405 });
     expect(ok('/api/health', 'HEAD')).toBe(true);
   });
 });

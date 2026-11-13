@@ -88,6 +88,15 @@ Give the mount only to a test group, never the group that reads outside messages
   into `~/Library/LaunchAgents/`, then `launchctl bootstrap gui/$(id -u) <plist>`. Consent per account:
   `pnpm exec tsx scripts/google-authorize.ts <account>` (loopback PKCE with your Desktop OAuth client;
   `GOOGLE_CLIENT_FILE` points at it). Health: `GET /health` (503 while any account needs consent).
+- **Mail triage** (`scripts/mail-triage.ts`, mailbox `mode: triaged`): starred mail stays the trusted path;
+  other mail matching `triage.query` is sent to Gemini Flash on Vertex AI (no tools, JSON schema) and the
+  agent only gets the validated summary line (type, action, due date, sender from the header). Triaged items
+  are suggestions: the agent asks before acting, and `mail_get` stays closed until the owner stars the
+  message or asks for a search. Failed triage is retried, never passed through raw. Setup: in the Cloud
+  project enable the Vertex AI API, create a service account with `roles/aiplatform.user`, save its JSON
+  key as `~/.config/nanoclaw/vertex-sa.json` (mode 0600, or set `VERTEX_SA_FILE`), use a paid (billed)
+  project, check the current data-retention settings, then switch the mailbox to `mode: triaged` and
+  restart the broker.
 - **Caller keys**: `scripts/bridge-policy.ts add-caller <agent> --onecli-agent <id> --host <bridge host>`
   (host-side MCP bridges) or `--target google` (broker). Keys go straight into OneCLI; only hashes are kept.
 - **Agent tools** (`agent-tools/`): `nudges.ts` (Bun) — nudge record, numbered brief replies, auto-action

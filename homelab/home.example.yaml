@@ -25,6 +25,18 @@ mailboxes:
     account: personal
     mode: starred                 # only STARRED messages
     used_by: [bono]
+  # mode: triaged = starred messages as above (trusted), plus non-starred mail matching `query`,
+  # which the agent only sees as short Gemini-made summaries (suggestions; never auto-actions).
+  # Needs a Vertex AI service-account key at ~/.config/nanoclaw/vertex-sa.json (see homelab/README.md).
+  # - id: personal
+  #   account: personal
+  #   mode: triaged
+  #   triage:
+  #     query: "category:primary -category:promotions -category:social"
+  #     project: my-gcp-project
+  #     region: us-central1
+  #     model: gemini-flash-model-id  # a Gemini Flash model id from the Vertex AI model list
+  #   used_by: [bono]
   - id: family-inbox
     account: family-inbox
     mode: allowlisted-forwarders  # only mail whose authenticated outer sender is listed

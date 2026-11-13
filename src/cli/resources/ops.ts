@@ -10,34 +10,19 @@
  * Before the hold, `preApproval` resolves the id against Dockhand: an unknown
  * id is refused with no card, and the card names the stack, host and action.
  */
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
-
 import { log } from '../../log.js';
 import { registerResource } from '../crud.js';
+import { dockhand, getJson, SAFE_NAME } from './dockhand-api.js';
+import {
+  describeUpdate,
+  formatVersions,
+  imageVersions,
+  resolveUpdate,
+  runUpdate,
+  type VersionRow,
+} from './dockhand-updates.js';
 
-const envFile = (): string =>
-  process.env.DOCKHAND_PROXY_ENV ?? path.join(os.homedir(), '.config', 'nanoclaw', 'dockhand-proxy.env');
 const DEPLOY_TIMEOUT_MS = 5 * 60_000;
-const LOOKUP_TIMEOUT_MS = 15_000;
-const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-
-function readEnvFile(): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const line of fs.readFileSync(envFile(), 'utf8').split('\n')) {
-    const m = /^([A-Z_]+)=(.*)$/.exec(line.trim());
-    if (m) out[m[1]] = m[2].replace(/^["']|["']$/g, '');
-  }
-  return out;
-}
-
-function dockhand(): { base: string; token: string } {
-  const env = readEnvFile();
-  const token = env.DOCKHAND_TOKEN;
-  if (!token) throw new Error('Dockhand token is not configured on the host.');
-  return { base: (env.DOCKHAND_URL ?? 'https://docker.bhlr.dev').replace(/\/$/, ''), token };
-}
 
 export function parseStackId(value: unknown): number {
   const raw = String(value ?? '').trim();
@@ -49,22 +34,6 @@ export interface StackInfo {
   id: number;
   name: string;
   host: string;
-}
-
-async function getJson(base: string, token: string, p: string): Promise<{ status: number; body: unknown }> {
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), LOOKUP_TIMEOUT_MS);
-  try {
-    const res = await fetch(base + p, {
-      headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
-      redirect: 'manual',
-      signal: ctl.signal,
-    });
-    if (!res.ok) return { status: res.status, body: null };
-    return { status: res.status, body: await res.json() };
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 /** Resolve a git stack id to its name and host. Throws for unknown ids or odd data. */
@@ -134,6 +103,49 @@ registerResource({
         return redeployStack(id);
       },
       formatHuman: (data) => String(data),
+    },
+    'update-containers': {
+      access: 'approval',
+      description:
+        "Pull the newer image and recreate containers that Dockhand's update check flagged (GET /api/containers/pending-updates?env=<id> on the read-only proxy). Up to 10 names per request, one host per request. Databases, caches and network/VPN containers are refused unless --include-risky true. No automatic rollback. Requires the owner to approve each request.",
+      args: [
+        {
+          name: 'env',
+          type: 'number',
+          required: true,
+          description: 'Dockhand environment id (see GET /api/environments).',
+        },
+        { name: 'containers', type: 'string', required: true, description: 'Comma-separated container names.' },
+        {
+          name: 'include-risky',
+          type: 'boolean',
+          description: 'Allow database/cache/network containers. Request these one at a time.',
+        },
+      ],
+      examples: [
+        'ncl ops update-containers --env 3 --containers homepage,code-server',
+        'ncl ops update-containers --env 3 --containers outline-redis --include-risky true',
+      ],
+      preApproval: async (raw) => describeUpdate(await resolveUpdate(raw)),
+      handler: async (args): Promise<string> => runUpdate(await resolveUpdate(args)), // re-checked after approval
+      formatHuman: (data) => String(data),
+    },
+    'image-versions': {
+      access: 'open',
+      description:
+        'Read-only: current and available version for containers with a pending update (or the named ones), read from the image registry without pulling. Shows ? when an image carries no version label.',
+      args: [
+        { name: 'env', type: 'number', required: true, description: 'Dockhand environment id.' },
+        {
+          name: 'containers',
+          type: 'string',
+          description: 'Optional comma-separated names; default is every container with a pending update.',
+        },
+        { name: 'arch', type: 'string', description: 'amd64 (default), arm64 or arm.' },
+      ],
+      examples: ['ncl ops image-versions --env 4'],
+      handler: async (args): Promise<VersionRow[]> => imageVersions(args),
+      formatHuman: (data) => formatVersions(data as VersionRow[]),
     },
   },
 });

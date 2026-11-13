@@ -17,11 +17,25 @@ export interface GoogleAccount {
   address: string;
   scopes: string[];
 }
+/** Gemini on Vertex AI for `triaged` mailboxes (see scripts/mail-triage.ts). */
+export interface TriageConfig {
+  /** Gmail query for the non-starred mail worth triaging, e.g. "category:primary -category:promotions". */
+  query: string;
+  project: string;
+  region: string;
+  model: string;
+}
 export interface Mailbox {
   id: string;
   account: string;
-  mode: 'starred' | 'allowlisted-forwarders';
+  /**
+   * starred: only STARRED messages. triaged: starred messages as with `starred` (trusted), plus
+   * non-starred mail matching triage.query, which the agent sees only as Gemini-derived summaries.
+   * allowlisted-forwarders: only mail from a verified allowlisted forwarder.
+   */
+  mode: 'starred' | 'triaged' | 'allowlisted-forwarders';
   forwarders: string[];
+  triage?: TriageConfig;
   used_by: UsedBy;
 }
 export interface Calendar {
@@ -182,8 +196,13 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
 
   const mailboxes: Mailbox[] = v.arr(top.mailboxes, 'mailboxes').map((x, i) => {
     const w = `mailboxes[${i}]`;
-    const o = v.obj(x, w, ['id', 'account', 'mode', 'forwarders', 'used_by'], ['id', 'account', 'mode', 'used_by']);
-    const mode = v.oneOf(o.mode, `${w}.mode`, ['starred', 'allowlisted-forwarders'] as const);
+    const o = v.obj(
+      x,
+      w,
+      ['id', 'account', 'mode', 'forwarders', 'triage', 'used_by'],
+      ['id', 'account', 'mode', 'used_by'],
+    );
+    const mode = v.oneOf(o.mode, `${w}.mode`, ['starred', 'triaged', 'allowlisted-forwarders'] as const);
     const account = v.str(o.account, `${w}.account`);
     if (account && !accountIds.has(account)) v.err(`${w}.account`, `unknown google account "${account}"`);
     else if (account && !accountScopes(account).includes('gmail.readonly'))
@@ -193,7 +212,25 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
       forwarders = v.strs(o.forwarders, `${w}.forwarders`, EMAIL).map((f) => f.toLowerCase());
       if (forwarders.length === 0) v.err(`${w}.forwarders`, 'must list at least one forwarder');
     } else if ('forwarders' in o) v.err(`${w}.forwarders`, 'only valid with mode allowlisted-forwarders');
-    return { id: v.str(o.id, `${w}.id`, ID), account, mode, forwarders, used_by: usedBy(o.used_by, `${w}.used_by`) };
+    let triage: TriageConfig | undefined;
+    if (mode === 'triaged') {
+      const t = v.obj(o.triage, `${w}.triage`, ['query', 'project', 'region', 'model']);
+      triage = {
+        query: v.str(t.query, `${w}.triage.query`),
+        project: v.str(t.project, `${w}.triage.project`, /^[a-z][a-z0-9-]{4,61}[a-z0-9]$/),
+        region: v.str(t.region, `${w}.triage.region`, /^[a-z0-9-]{2,40}$/),
+        model: v.str(t.model, `${w}.triage.model`, /^[a-z0-9][a-z0-9.@-]{1,80}$/),
+      };
+      if (/\bis:starred\b/i.test(triage.query)) v.err(`${w}.triage.query`, 'starred mail is already included');
+    } else if ('triage' in o) v.err(`${w}.triage`, 'only valid with mode triaged');
+    return {
+      id: v.str(o.id, `${w}.id`, ID),
+      account,
+      mode,
+      forwarders,
+      ...(triage ? { triage } : {}),
+      used_by: usedBy(o.used_by, `${w}.used_by`),
+    };
   });
   v.uniqueIds(mailboxes, 'mailboxes');
 

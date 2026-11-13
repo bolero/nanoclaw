@@ -16,7 +16,8 @@ const BOOL = /^(true|false)$/;
 // Container ids (hex) or names; no dots-only segments, no slashes, no encoding.
 const CONTAINER = /[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/;
 
-const ENV = { environmentId: INT };
+// Dockhand reads `env`; `environmentId` is kept for older callers (Dockhand ignores it).
+const ENV = { env: INT, environmentId: INT };
 const route = (p: string, query: Record<string, QueryRule> = {}): Route => ({
   path: new RegExp(`^${p}$`),
   query,
@@ -33,6 +34,10 @@ export const ROUTES: Route[] = [
   route('/api/git/stacks'),
   route('/api/git/stacks/[1-9][0-9]{0,6}'),
   route('/api/activity', { ...ENV, limit: SMALL_INT }),
+  // GET only returns Dockhand's stored update-check results; POST (runs a check) and
+  // DELETE (clears results) are refused by the GET/HEAD rule below.
+  route('/api/containers/pending-updates', { env: INT }),
+  route('/api/containers/check-updates', { env: INT }),
 ];
 
 export type Verdict = { ok: true } | { ok: false; code: number; reason: string };

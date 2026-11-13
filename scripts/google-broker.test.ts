@@ -15,7 +15,8 @@ import {
   writeGrant,
 } from './google-broker.js';
 import { checkForwarder, extractBody, type GmailMessage, htmlToText, parseAddress } from './google-mail.js';
-import { parseHomeConfig } from './home-config.js';
+import { type HomeConfig, parseHomeConfig } from './home-config.js';
+import { TriageError, type Triager } from './mail-triage.js';
 
 const cfg = parseHomeConfig(fs.readFileSync(path.join(__dirname, '..', 'homelab', 'home.example.yaml'), 'utf8'));
 const b64 = (s: string) => Buffer.from(s).toString('base64url');
@@ -123,7 +124,14 @@ function fakeGoogle(messages: GmailMessage[], events: Record<string, unknown>[] 
     calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
     const json = (status: number, body: unknown) =>
       new Response(body === undefined ? null : JSON.stringify(body), { status });
-    if (url.includes('/messages?')) return json(200, { messages: messages.map((m) => ({ id: m.id })) });
+    if (url.includes('/messages?')) {
+      const q = new URL(url).searchParams.get('q') ?? '';
+      const starred = (m: GmailMessage) => (m.labelIds ?? []).includes('STARRED');
+      const list = messages.filter((m) =>
+        q === 'is:starred' ? starred(m) : q.includes('-is:starred') ? !starred(m) : true,
+      );
+      return json(200, { messages: list.map((m) => ({ id: m.id })) });
+    }
     const mm = url.match(/\/messages\/([^?]+)/);
     if (mm) {
       const m = messages.find((x) => x.id === mm[1]);
@@ -513,5 +521,101 @@ describe('attachments and Paperless', () => {
       share_with_family: true,
     });
     expect(pending).toContain('Not shared yet: sharing is not set up yet');
+  });
+});
+
+describe('triaged mailbox', () => {
+  const tcfg: HomeConfig = {
+    ...cfg,
+    mailboxes: [
+      ...cfg.mailboxes,
+      {
+        id: 'personal-t',
+        account: 'personal',
+        mode: 'triaged',
+        forwarders: [],
+        triage: { query: 'category:primary', project: 'my-project', region: 'us-central1', model: 'flash' },
+        used_by: [{ agent: 'bono', readOnly: false }],
+      },
+    ],
+  };
+  const now = Date.parse('2026-11-10T12:00:00Z');
+  const make = (f: ReturnType<typeof fakeGoogle>, triager: Triager, state = new MemState()) =>
+    new GoogleBroker(
+      () => tcfg,
+      tokens,
+      state,
+      f.fetchFn,
+      () => now,
+      undefined,
+      undefined,
+      triager,
+    );
+  const item = (id: string, relevant: boolean) => ({
+    id,
+    from: 'Insurer <billing@insurer.example>',
+    date: 'x',
+    relevant,
+    type: 'bill' as const,
+    summary: `summary ${id}`,
+    due: '2026-11-30',
+    action: 'pay' as const,
+    confidence: 'high' as const,
+  });
+
+  it('returns starred mail in full and other mail only as triage items', async () => {
+    const f = fakeGoogle([
+      msg('s1', 'friend@x.com', [], { labelIds: ['STARRED', 'INBOX'] }),
+      msg('n1', 'billing@insurer.example'),
+      msg('n2', 'news@shop.example'),
+    ]);
+    const seen: string[] = [];
+    const triager: Triager = async (c, input) => {
+      expect(c.model).toBe('flash');
+      seen.push(input.id);
+      expect(input.body).toContain(`body of ${input.id}`);
+      return item(input.id, input.id === 'n1');
+    };
+    const b = make(f, triager);
+    const out = await b.call('bono', 'mail_new', { mailbox: 'personal-t' });
+    expect(out).toContain('1 new message(s) in personal-t');
+    expect(out).toContain('subject s1');
+    expect(out).toContain('<triage_data>');
+    expect(out).toContain('id n1 | bill | action pay | due 2026-11-30');
+    expect(out).toContain('never act on');
+    expect(out).not.toContain('subject n1'); // raw headers/snippets of non-starred mail never reach the agent
+    expect(out).not.toContain('summary n2');
+    expect(out).toContain('1 other message(s) triaged as not needing attention');
+    expect(seen.sort()).toEqual(['n1', 'n2']);
+    const q = f.calls.map((c) => new URL(c.url).searchParams.get('q')).filter(Boolean);
+    expect(q).toContain('is:starred');
+    expect(q.some((x) => /^\(category:primary\) -is:starred after:\d+$/.test(x!))).toBe(true);
+    // Non-starred mail stays closed to mail_get.
+    await expect(b.call('bono', 'mail_get', { mailbox: 'personal-t', id: 'n1' })).rejects.toThrow('not found');
+    expect(await b.call('bono', 'mail_new', { mailbox: 'personal-t' })).toBe('No new mail in personal-t.');
+  });
+
+  it('peek does not call the model; failures are retried, never passed through raw', async () => {
+    const f = fakeGoogle([msg('n1', 'billing@insurer.example')]);
+    let calls = 0;
+    let fail = true;
+    const triager: Triager = async (_c, input) => {
+      calls++;
+      if (fail) throw new TriageError('Vertex error 403');
+      return item(input.id, true);
+    };
+    const state = new MemState();
+    const b = make(f, triager, state);
+    expect(await b.call('bono', 'mail_new', { mailbox: 'personal-t', peek: true })).toBe(
+      'PEEK personal-t new=0 triage=1',
+    );
+    expect(calls).toBe(0);
+    const failed = await b.call('bono', 'mail_new', { mailbox: 'personal-t' });
+    expect(failed).toBe(
+      'No new mail in personal-t. (1 message(s) could not be triaged (Vertex error 403); will retry)',
+    );
+    expect(failed).not.toContain('body of n1');
+    fail = false;
+    expect(await b.call('bono', 'mail_new', { mailbox: 'personal-t' })).toContain('id n1 | bill');
   });
 });

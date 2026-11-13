@@ -119,10 +119,9 @@ describe('home config', () => {
     // read_all agents: the result is the folders they may WRITE; ":read" entries are excluded
     expect(noteFoldersFor(cfg, 'bono')).toEqual(['Family']);
     const ro = parseHomeConfig(
-      fs.readFileSync(path.join(__dirname, '..', 'homelab', 'home.example.yaml'), 'utf8').replace(
-        'used_by: [family, bono]}',
-        'used_by: [family, "bono:read"]}',
-      ),
+      fs
+        .readFileSync(path.join(__dirname, '..', 'homelab', 'home.example.yaml'), 'utf8')
+        .replace('used_by: [family, bono]}', 'used_by: [family, "bono:read"]}'),
     );
     expect(noteFoldersFor(ro, 'bono')).toEqual([]);
     expect(accessFor(cfg.omnifocus.used_by, 'family')).toBe('none');
@@ -136,5 +135,26 @@ describe('home config', () => {
     expect(() => loadHomeConfig(f)).toThrow(/too open/);
     fs.chmodSync(f, 0o600);
     expect(loadHomeConfig(f).agents).toContain('bono');
+  });
+
+  it('validates triaged mailboxes', () => {
+    const c = base();
+    c.mailboxes[0].mode = 'triaged';
+    expect(problems(c)).toEqual(
+      expect.arrayContaining([expect.stringContaining('mailboxes[0].triage: must be a mapping')]),
+    );
+    c.mailboxes[0].triage = {
+      query: 'is:starred OR category:primary',
+      project: 'my-project',
+      region: 'us-central1',
+      model: 'flash',
+    };
+    expect(problems(c)).toEqual([expect.stringContaining('starred mail is already included')]);
+    c.mailboxes[0].triage.query = 'category:primary';
+    expect(problems(c)).toEqual([]);
+    expect(validateHomeConfig(c).mailboxes[0].triage?.model).toBe('flash');
+    const d = base();
+    d.mailboxes[0].triage = c.mailboxes[0].triage;
+    expect(problems(d)).toEqual([expect.stringContaining('only valid with mode triaged')]);
   });
 });
