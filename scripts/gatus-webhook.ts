@@ -10,6 +10,7 @@
  *   WEBHOOK_SECRET       required — shared secret, sent as `X-Webhook-Secret`
  *   WEBHOOK_HOST         bind address (default 127.0.0.1; use the Tailscale IP)
  *   WEBHOOK_PORT         default 8787
+ *   PROXY_PROBE_HOST     where /health probes the Dockhand proxy (default 127.0.0.1)
  *   TARGET_CHANNEL_TYPE  default "telegram"
  *   TARGET_PLATFORM_ID   required — e.g. "telegram:8858403005"
  *   TARGET_THREAD_ID     optional — topic/thread id
@@ -181,7 +182,13 @@ http
         });
       Promise.all([
         probe(() => net.createConnection(SOCK)),
-        probe(() => net.createConnection({ host: '127.0.0.1', port: Number(process.env.PROXY_PORT ?? 8790) })),
+        probe(() =>
+          net.createConnection({
+            // Linux hosts bind the proxy to the docker bridge, not loopback.
+            host: process.env.PROXY_PROBE_HOST ?? '127.0.0.1',
+            port: Number(process.env.PROXY_PORT ?? 8790),
+          }),
+        ),
       ]).then(([host, proxy]) => {
         const ok = host && proxy;
         res.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' });
