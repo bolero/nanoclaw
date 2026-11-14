@@ -83,7 +83,14 @@ export interface DashboardConfig {
   today_calendars: string[];
   /** Gatus base URL for service health on Ops. */
   gatus_url?: string;
-  weather?: { latitude: number; longitude: number; label: string; unit?: 'celsius' | 'fahrenheit' };
+  weather?: {
+    latitude: number;
+    longitude: number;
+    label: string;
+    unit?: 'celsius' | 'fahrenheit';
+    /** open-meteo (default, worldwide) or nws (US National Weather Service). */
+    provider?: 'open-meteo' | 'nws';
+  };
 }
 
 export const DEFAULT_HOME_CONFIG_PATH = path.join(os.homedir(), '.config', 'nanoclaw', 'home.yaml');
@@ -388,7 +395,7 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
       const w = v.obj(
         d.weather,
         'dashboard.weather',
-        ['latitude', 'longitude', 'label', 'unit'],
+        ['latitude', 'longitude', 'label', 'unit', 'provider'],
         ['latitude', 'longitude', 'label'],
       );
       const num = (x: unknown, where: string, lim: number): number => {
@@ -403,6 +410,8 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
       };
       if (w.unit !== undefined)
         dashboard.weather.unit = v.oneOf(w.unit, 'dashboard.weather.unit', ['celsius', 'fahrenheit'] as const);
+      if (w.provider !== undefined)
+        dashboard.weather.provider = v.oneOf(w.provider, 'dashboard.weather.provider', ['open-meteo', 'nws'] as const);
     }
   }
 

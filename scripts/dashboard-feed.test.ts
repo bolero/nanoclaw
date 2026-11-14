@@ -13,6 +13,8 @@ import {
   collectAlerts,
   collectServices,
   collectTasks,
+  collectWeather,
+  nwsCode,
   localDate,
   localMidnight,
   friendlyError,
@@ -125,6 +127,46 @@ describe('Today', () => {
     ]);
     expect(scopes).toEqual(['calendar.calendarlist.readonly', 'calendar.events.owned']);
     expect(calls[1]).toContain('fam123%40group');
+  });
+});
+
+describe('weather', () => {
+  it('reads the US National Weather Service when configured', async () => {
+    const seen: string[] = [];
+    const fetchFn = (async (url: string) => {
+      seen.push(String(url));
+      if (String(url).includes('/points/'))
+        return new Response(
+          JSON.stringify({ properties: { forecast: 'https://nws/f', forecastHourly: 'https://nws/h' } }),
+        );
+      if (String(url).startsWith('https://nws/h'))
+        return new Response(
+          JSON.stringify({
+            properties: {
+              periods: [{ temperature: 61, temperatureUnit: 'F', shortForecast: 'Partly Cloudy', isDaytime: false }],
+            },
+          }),
+        );
+      return new Response(
+        JSON.stringify({
+          properties: {
+            periods: [
+              { temperature: 52, temperatureUnit: 'F', shortForecast: 'Clear', isDaytime: false },
+              { temperature: 70, temperatureUnit: 'F', shortForecast: 'Sunny', isDaytime: true },
+            ],
+          },
+        }),
+      );
+    }) as typeof fetch;
+    const s = await collectWeather(
+      { latitude: 37.39, longitude: -121.89, label: 'Home', unit: 'fahrenheit', provider: 'nws' },
+      fetchFn,
+    );
+    expect(s).toMatchObject({
+      weather: { temperature: 61, text: 'Partly Cloudy', code: 2, high: 70, low: 52, unit: '°F' },
+    });
+    expect(seen[0]).toBe('https://api.weather.gov/points/37.3900,-121.8900');
+    expect(nwsCode('Chance Rain Showers')).toBe(63);
   });
 });
 

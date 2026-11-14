@@ -97,4 +97,4 @@ dashboard:
     ops: [alex]
   today_calendars: [personal, family]
   gatus_url: https://status.example.com
-  weather: {latitude: 52.37, longitude: 4.90, label: Home, unit: celsius}   # unit: celsius | fahrenheit
+  weather: {latitude: 52.37, longitude: 4.90, label: Home, unit: celsius}   # unit: celsius | fahrenheit; provider: open-meteo (default) | nws (US only)

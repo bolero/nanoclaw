@@ -154,6 +154,7 @@ export async function collectWeather(
 ): Promise<Section> {
   const section: Section = { id: 'weather', kind: 'weather', title: 'Weather' };
   if (!cfg) return { ...section, error: 'no location configured' };
+  if (cfg.provider === 'nws') return { ...section, weather: await nwsWeather(cfg, fetchFn) };
   const url =
     `https://api.open-meteo.com/v1/forecast?latitude=${cfg.latitude}&longitude=${cfg.longitude}` +
     '&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min&forecast_days=1&timezone=auto' +
@@ -177,6 +178,57 @@ export async function collectWeather(
       low: Math.round(j.daily?.temperature_2m_min?.[0] ?? NaN),
       unit: j.current_units?.temperature_2m ?? '°C',
     },
+  };
+}
+
+/** Map a National Weather Service short forecast to the WMO-style code the app draws icons from. */
+export function nwsCode(text: string): number {
+  const t = text.toLowerCase();
+  if (t.includes('thunder')) return 95;
+  if (t.includes('snow') || t.includes('flurr') || t.includes('sleet')) return 73;
+  if (t.includes('drizzle')) return 53;
+  if (t.includes('rain') || t.includes('shower')) return 63;
+  if (t.includes('fog') || t.includes('haze') || t.includes('smoke')) return 45;
+  if (t.includes('partly') || t.includes('mostly sunny') || t.includes('mostly clear')) return 2;
+  if (t.includes('cloudy') || t.includes('overcast')) return 3;
+  if (t.includes('sunny') || t.includes('clear')) return 0;
+  return -1;
+}
+
+/** US National Weather Service (api.weather.gov): free, no key, US locations only. */
+async function nwsWeather(
+  cfg: NonNullable<NonNullable<HomeConfig['dashboard']>['weather']>,
+  fetchFn: typeof fetch,
+): Promise<Weather> {
+  const headers = { 'user-agent': 'nanoclaw-dashboard', accept: 'application/geo+json' };
+  const get = async <T>(url: string): Promise<T> => {
+    const res = await fetchFn(url, { headers, signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) throw new Error(`weather service ${res.status}`);
+    return (await res.json()) as T;
+  };
+  const points = await get<{ properties?: { forecast?: string; forecastHourly?: string } }>(
+    `https://api.weather.gov/points/${cfg.latitude.toFixed(4)},${cfg.longitude.toFixed(4)}`,
+  );
+  const units = cfg.unit === 'celsius' ? '?units=si' : '';
+  if (!points.properties?.forecast || !points.properties.forecastHourly) throw new Error('location not covered by NWS');
+  type Period = { temperature: number; temperatureUnit: string; shortForecast: string; isDaytime: boolean };
+  const [hourly, daily] = await Promise.all([
+    get<{ properties?: { periods?: Period[] } }>(points.properties.forecastHourly + units),
+    get<{ properties?: { periods?: Period[] } }>(points.properties.forecast + units),
+  ]);
+  const now = hourly.properties?.periods?.[0];
+  const periods = daily.properties?.periods ?? [];
+  const day = periods.find((p) => p.isDaytime);
+  const night = periods.find((p) => !p.isDaytime);
+  const text = now?.shortForecast ?? '—';
+  return {
+    label: cfg.label,
+    temperature: now?.temperature ?? NaN,
+    code: nwsCode(text),
+    text,
+    high: day?.temperature ?? NaN,
+    low: night?.temperature ?? NaN,
+    unit: `°${now?.temperatureUnit ?? (cfg.unit === 'celsius' ? 'C' : 'F')}`,
   };
 }
 
