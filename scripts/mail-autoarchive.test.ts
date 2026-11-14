@@ -106,6 +106,26 @@ describe('mail-autoarchive', () => {
     expect(state.payslips.done.m1).toBeUndefined();
   });
 
+  it('re-sends a lost upload once it is released, and never counts an unconfirmed one as saved', async () => {
+    const state: Record<string, { done: Record<string, string> }> = {};
+    let calls = 0;
+    const stuck = deps([found('m1', '2026-11-15')], {
+      archive: async () => 'Upload of "Payslip.pdf" is unconfirmed; Paperless is still processing it.',
+      release: async () => false,
+    });
+    await runRules([rule], stuck.d, state as never);
+    expect(state.payslips.done.m1).toBeUndefined();
+    const freed = deps([found('m1', '2026-11-15')], {
+      archive: async () =>
+        ++calls === 1 ? 'Upload of "Payslip.pdf" is unconfirmed;' : 'Archived "Payslip.pdf" in Paperless',
+      release: async () => true,
+    });
+    await runRules([rule], freed.d, state as never);
+    expect(calls).toBe(2);
+    expect(state.payslips.done.m1).toBeDefined();
+    expect(freed.notes).toEqual(['Saved payslip for Nov 15, 2026 to Paperless.']);
+  });
+
   it('reports a search failure once and the recovery', async () => {
     const state = {};
     const a = deps(new Error('Google sign-in for "personal" is needed again'));

@@ -200,6 +200,24 @@ export class PaperlessArchive {
     return this.status(key);
   }
 
+  /**
+   * For callers that own the retry decision (scheduled jobs, not agents): forget an upload whose
+   * POST reply was lost, once it is older than `minAgeMs` and Paperless has no document with its
+   * checksum, so the next archive() sends it again. Returns true when the reservation was released.
+   */
+  async releaseUnconfirmed(data: Buffer, minAgeMs = 10 * 60 * 1000): Promise<boolean> {
+    const c = this.config();
+    const digest = crypto.createHash('sha256').update(data).digest('hex');
+    const l = this.ledger();
+    const r = l[digest];
+    if (!r || r.state !== 'unconfirmed') return false;
+    if (Date.now() - Date.parse(r.at) < minAgeMs) return false;
+    if (await this.findByChecksum(c, [digest, r.md5])) return false; // it did arrive; status() will record it
+    delete l[digest];
+    this.save(l);
+    return true;
+  }
+
   async archive(data: Buffer, filename: string, mime: string, title?: string, share = false): Promise<string> {
     const c = this.config();
     if (!DOC_TYPES[mime]) throw new Error('only PDFs and images can be archived');

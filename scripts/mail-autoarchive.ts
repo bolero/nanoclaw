@@ -43,6 +43,8 @@ export interface Deps {
   download(rule: MailArchiveRule, f: Found): Promise<Buffer>;
   archive(data: Buffer, filename: string, mime: string, title: string, share: boolean): Promise<string>;
   notify(handle: string, text: string): Promise<void>;
+  /** Release a lost upload (no reply, not in Paperless, old enough) so it can be sent again. */
+  release?(data: Buffer): Promise<boolean>;
   timezone: string;
 }
 
@@ -163,8 +165,12 @@ export async function runRules(
       try {
         const data = await deps.download(rule, f);
         const title = `${rule.title} ${localDate(f.date, deps.timezone)}`;
-        const result = await deps.archive(data, f.filename, f.mime, title, rule.share === true);
-        if (/outcome .* is unknown/i.test(result)) throw new Error('Paperless did not confirm the upload');
+        const unconfirmed = (r: string): boolean => /outcome .* is unknown|is unconfirmed/i.test(r);
+        let result = await deps.archive(data, f.filename, f.mime, title, rule.share === true);
+        if (unconfirmed(result) && deps.release && (await deps.release(data))) {
+          result = await deps.archive(data, f.filename, f.mime, title, rule.share === true);
+        }
+        if (unconfirmed(result)) throw new Error('Paperless did not confirm the upload');
         st.done[f.messageId] = new Date().toISOString();
         delete st.warned[f.messageId];
         saved.push(f.date);
@@ -261,6 +267,7 @@ function liveDeps(tokens: GoogleTokens, archiver: PaperlessArchive, nclBin: stri
       return Buffer.from(r.data.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
     },
     archive: (data, filename, mime, title, share) => archiver.archive(data, filename, mime, title, share),
+    release: (data) => archiver.releaseUnconfirmed(data),
     async notify(handle, text) {
       await promisify(execFile)(
         nclBin,
