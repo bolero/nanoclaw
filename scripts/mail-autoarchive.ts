@@ -38,7 +38,8 @@ export interface Found {
 
 export interface Deps {
   /** Messages matching the rule (newest first), with the matching attachment located. */
-  find(rule: MailArchiveRule): Promise<Found[]>;
+  /** `known` message ids are already handled; implementations may skip fetching them. */
+  find(rule: MailArchiveRule, known: Set<string>): Promise<Found[]>;
   download(rule: MailArchiveRule, f: Found): Promise<Buffer>;
   archive(data: Buffer, filename: string, mime: string, title: string, share: boolean): Promise<string>;
   notify(handle: string, text: string): Promise<void>;
@@ -129,7 +130,7 @@ export async function runRules(
     const label = rule.title.toLowerCase();
     let found: Found[];
     try {
-      found = await deps.find(rule);
+      found = await deps.find(rule, new Set([...Object.keys(st.done), ...Object.keys(st.warned)]));
     } catch (e) {
       const msg = (e as Error).message;
       if (st.lastError !== msg) await say(rule, `Couldn't check mail for ${label}s: ${msg}. I'll keep retrying.`);
@@ -189,9 +190,23 @@ export async function runRules(
 // ---------- real dependencies ----------
 
 async function gmail(token: string, p: string): Promise<unknown> {
-  const res = await fetch(`${GMAIL}${p}`, { headers: { authorization: `Bearer ${token}` }, redirect: 'error' });
-  if (!res.ok) throw new Error(`Gmail error ${res.status}`);
-  return res.json();
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(`${GMAIL}${p}`, { headers: { authorization: `Bearer ${token}` }, redirect: 'error' });
+    if (res.ok) return res.json();
+    let reason = '';
+    try {
+      const body = (await res.json()) as { error?: { errors?: { reason?: string }[]; status?: string } };
+      reason = body.error?.errors?.[0]?.reason ?? body.error?.status ?? '';
+    } catch {
+      /* no JSON body */
+    }
+    const rateLimited = res.status === 429 || (res.status === 403 && /rate|quota/i.test(reason));
+    if (rateLimited && attempt < 4) {
+      await new Promise((r) => setTimeout(r, 2000 * 2 ** attempt));
+      continue;
+    }
+    throw new Error(`Gmail error ${res.status}${reason ? ` (${reason})` : ''}`);
+  }
 }
 
 function liveDeps(tokens: GoogleTokens, archiver: PaperlessArchive, nclBin: string, timezone: string): Deps {
@@ -205,7 +220,7 @@ function liveDeps(tokens: GoogleTokens, archiver: PaperlessArchive, nclBin: stri
   };
   return {
     timezone,
-    async find(rule) {
+    async find(rule, known) {
       const t = await token(rule);
       const ids: string[] = [];
       let page: string | undefined;
@@ -217,6 +232,7 @@ function liveDeps(tokens: GoogleTokens, archiver: PaperlessArchive, nclBin: stri
       } while (page && ids.length < 1000);
       const out: Found[] = [];
       for (const id of ids) {
+        if (known.has(id)) continue;
         const msg = (await gmail(t, `/messages/${id}?format=full`)) as GmailMessage & { internalDate?: string };
         const part = findAttachment(msg.payload, rule.attachment) as
           | (GmailPart & { filename: string; mimeType?: string; body: { attachmentId: string } })
