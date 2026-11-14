@@ -10,6 +10,11 @@
  *       Seeds a grant from the existing Aegis Gmail credential (same client, same refresh
  *       token) after checking its account and proving the refresh token still works.
  *
+ *   pnpm exec tsx scripts/google-authorize.ts --start <account-id>
+ *   pnpm exec tsx scripts/google-authorize.ts --finish <account-id> '<127.0.0.1:8099/callback?... address>'
+ *       Same consent from a phone or any other device: --start prints the link; after approving,
+ *       the browser lands on an address it cannot open; paste it into --finish here.
+ *
  *   pnpm exec tsx scripts/google-authorize.ts --status
  *
  * Client file: $GOOGLE_CLIENT_FILE or ~/.config/aegis-gmail/credentials.json (referenced, not copied).
@@ -142,15 +147,21 @@ async function consent(id: string): Promise<void> {
     }, 300_000).unref();
   });
 
+  await exchangeAndSave(id, code.code, verifier, code.redirect);
+}
+
+async function exchangeAndSave(id: string, authCode: string, verifier: string, redirect: string): Promise<void> {
+  const acct = account(id);
+  const client = readClient(CLIENT_FILE);
   const res = await fetch(TOKEN_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       client_id: client.client_id,
       client_secret: client.client_secret,
-      code: code.code,
+      code: authCode,
       code_verifier: verifier,
-      redirect_uri: code.redirect,
+      redirect_uri: redirect,
       grant_type: 'authorization_code',
     }).toString(),
   });
@@ -176,6 +187,71 @@ async function consent(id: string): Promise<void> {
   );
 }
 
+// ---- phone-friendly two-step consent ------------------------------------------------------
+// --start prints a link that can be opened on any device; Google then redirects to a loopback
+// address that the phone cannot open. Paste that address into --finish on this machine, which
+// holds the PKCE verifier (pending file, 0600, valid 15 minutes).
+
+const PENDING_TTL_MS = 15 * 60_000;
+const pendingPath = (id: string): string => path.join(GRANTS_DIR, `pending-${id}.json`);
+
+function start(id: string): void {
+  const acct = account(id);
+  const client = readClient(CLIENT_FILE);
+  const verifier = crypto.randomBytes(48).toString('base64url');
+  const state = crypto.randomBytes(24).toString('base64url');
+  const redirect = 'http://127.0.0.1:8099/callback';
+  fs.mkdirSync(GRANTS_DIR, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(pendingPath(id), JSON.stringify({ verifier, state, redirect, created: Date.now() }), {
+    mode: 0o600,
+  });
+  const url = `${AUTH_URL}?${new URLSearchParams({
+    client_id: client.client_id,
+    redirect_uri: redirect,
+    response_type: 'code',
+    scope: acct.scopes.map(SCOPE).join(' '),
+    access_type: 'offline',
+    prompt: 'consent',
+    include_granted_scopes: 'false',
+    login_hint: acct.address,
+    state,
+    code_challenge: crypto.createHash('sha256').update(verifier).digest('base64url'),
+    code_challenge_method: 'S256',
+  })}`;
+  console.log(
+    `Open on any device, sign in as ${acct.address}, approve, then copy the address of the page that fails to load (127.0.0.1:8099/callback?...) and run:\n  --finish ${id} '<that address>'\n\n${url}`,
+  );
+}
+
+async function finish(id: string, callback: string): Promise<void> {
+  const file = pendingPath(id);
+  if (!fs.existsSync(file)) throw new Error(`no pending sign-in for ${id}; run --start ${id} first`);
+  const p = JSON.parse(fs.readFileSync(file, 'utf8')) as {
+    verifier: string;
+    state: string;
+    redirect: string;
+    created: number;
+  };
+  if (Date.now() - p.created > PENDING_TTL_MS) {
+    fs.rmSync(file, { force: true });
+    throw new Error('the sign-in link expired (15 min); run --start again');
+  }
+  const { code: authCode, state } = parseCallback(callback);
+  if (state !== p.state) throw new Error('this address belongs to a different sign-in (state mismatch)');
+  // Keep the pending sign-in until the exchange succeeds, so a bad paste can be retried.
+  await exchangeAndSave(id, authCode, p.verifier, p.redirect);
+  fs.rmSync(file, { force: true });
+}
+
+/** Accepts the callback address with or without a scheme ("127.0.0.1:8099/callback?..."). */
+export function parseCallback(raw: string): { code: string; state: string } {
+  const text = raw.trim();
+  const url = new URL(/^https?:\/\//i.test(text) ? text : `http://${text}`);
+  const code = url.searchParams.get('code');
+  if (!code) throw new Error(`consent failed: ${url.searchParams.get('error') ?? 'no code in the address'}`);
+  return { code, state: url.searchParams.get('state') ?? '' };
+}
+
 function status(): void {
   for (const a of loadHomeConfig().google_accounts) {
     const file = grantPath(a.id);
@@ -196,6 +272,8 @@ const [first, second] = process.argv.slice(2);
 (async () => {
   if (first === '--status') status();
   else if (first === '--import-aegis' && second) await importAegis(second);
+  else if (first === '--start' && second) start(second);
+  else if (first === '--finish' && second && process.argv[4]) await finish(second, process.argv[4]);
   else if (first && !first.startsWith('-')) await consent(first);
   else {
     console.error('usage: google-authorize.ts <account> | --import-aegis <account> | --status');
