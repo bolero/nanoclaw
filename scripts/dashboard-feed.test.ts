@@ -15,6 +15,7 @@ import {
   collectTasks,
   localDate,
   localMidnight,
+  friendlyError,
   taskTitle,
   type DashEvent,
 } from './dashboard-feed.js';
@@ -196,6 +197,19 @@ describe('Ops', () => {
   });
 });
 
+describe('friendlyError', () => {
+  it('turns ncl socket failures into one short line', () => {
+    expect(
+      friendlyError(
+        new Error(
+          'Command failed: /x/bin/ncl tasks list --json\nncl: cannot reach NanoClaw host (connect ENOENT /x/data/ncl.sock).',
+        ),
+      ),
+    ).toBe('NanoClaw host not reachable');
+    expect(friendlyError(new Error('Gatus 503\nmore'))).toBe('Gatus 503');
+  });
+});
+
 describe('buildDashboard', () => {
   it('keeps a board when one source fails and carries the audience', async () => {
     const reader = { events: async () => [] } as unknown as CalendarReader;
@@ -219,6 +233,28 @@ describe('buildDashboard', () => {
     const ops = out.boards[1]!.sections;
     expect(ops.find((s) => s.id === 'services')!.error).toBe('Gatus 503');
     expect(ops.find((s) => s.id === 'approvals')!.error).toBe('host down');
+
+    // Next run with the same failures keeps the last good data, marked with the error.
+    const good = structuredClone(out);
+    const tasksSection = good.boards[1]!.sections.find((s) => s.id === 'tasks')!;
+    Object.assign(tasksSection, {
+      error: undefined,
+      summary: '1 scheduled',
+      rows: [{ title: 'argus · Nightly check' }],
+    });
+    const again = await buildDashboard({
+      cfg,
+      tz: 'UTC',
+      reader,
+      ncl,
+      alertsDb: '/nonexistent',
+      fetchFn,
+      previous: good,
+    });
+    expect(again.boards[1]!.sections.find((s) => s.id === 'tasks')).toMatchObject({
+      rows: [{ title: 'argus · Nightly check' }],
+      error: 'host down (showing data from 2026-11-13T12:00:00.000Z)',
+    });
     expect(ops.find((s) => s.id === 'alerts')!.error).toBe('no alerts database');
     expect(out.boards[0]!.sections.map((s) => s.id)).toEqual(['events']);
   });

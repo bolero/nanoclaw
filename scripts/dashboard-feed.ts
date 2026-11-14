@@ -449,6 +449,14 @@ export async function collectTasks(ncl: NclRunner, tz: string): Promise<Section>
 
 // ---- assembly ------------------------------------------------------------------------------
 
+/** Short, human error text: no stack, no command lines. */
+export function friendlyError(e: unknown): string {
+  const msg = (e as Error)?.message ?? String(e);
+  if (/ncl\.sock|cannot reach NanoClaw host/i.test(msg)) return 'NanoClaw host not reachable';
+  if (/needs_consent|needs consent/i.test(msg)) return msg.slice(0, 300);
+  return msg.split('\n')[0]!.slice(0, 200);
+}
+
 async function guard(
   id: string,
   title: string,
@@ -458,8 +466,23 @@ async function guard(
   try {
     return await fn();
   } catch (e) {
-    return { id, title, kind, error: (e as Error).message.slice(0, 200) } as Section;
+    return { id, title, kind, error: friendlyError(e) } as Section;
   }
+}
+
+/**
+ * A source that fails briefly (host restart, network blip) keeps showing its last good data,
+ * marked with the error, instead of going blank.
+ */
+export function carryOver(section: Section, previous: Section | undefined, previousAt: string | undefined): Section {
+  if (!section.error || !previous || previous.error) return section;
+  const hasData =
+    (previous.kind === 'rows' && previous.rows !== undefined) ||
+    (previous.kind === 'events' && previous.days !== undefined) ||
+    (previous.kind === 'weather' && previous.weather !== undefined);
+  if (!hasData) return section;
+  const when = previousAt ? ` (showing data from ${previousAt})` : '';
+  return { ...previous, error: `${section.error}${when}` } as Section;
 }
 
 export async function buildDashboard(opts: {
@@ -470,6 +493,7 @@ export async function buildDashboard(opts: {
   alertsDb: string;
   fetchFn?: typeof fetch;
   now?: Date;
+  previous?: DashboardFile | null;
 }): Promise<DashboardFile> {
   const d = opts.cfg.dashboard;
   if (!d) throw new Error('home.yaml has no dashboard section');
@@ -482,15 +506,36 @@ export async function buildDashboard(opts: {
     guard('tasks', 'Scheduled tasks', 'rows', () => collectTasks(opts.ncl, opts.tz)),
   ]);
   const alerts = await guard('alerts', 'Alerts, last 24 h', 'rows', () => collectAlerts(opts.alertsDb, opts.now));
+  const prev = (board: string, id: string) =>
+    opts.previous?.boards.find((b) => b.id === board)?.sections.find((s) => s.id === id);
+  const keep = (board: string, s: Section) => carryOver(s, prev(board, s.id), opts.previous?.generatedAt);
   return {
     version: 1,
     generatedAt: (opts.now ?? new Date()).toISOString(),
     timezone: opts.tz,
     boards: [
-      { id: 'today', title: 'Today', audience: d.audience.today, sections: d.weather ? [weather, events] : [events] },
-      { id: 'ops', title: 'Ops', audience: d.audience.ops, sections: [services, alerts, approvals, tasks] },
+      {
+        id: 'today',
+        title: 'Today',
+        audience: d.audience.today,
+        sections: (d.weather ? [weather, events] : [events]).map((s) => keep('today', s)),
+      },
+      {
+        id: 'ops',
+        title: 'Ops',
+        audience: d.audience.ops,
+        sections: [services, alerts, approvals, tasks].map((s) => keep('ops', s)),
+      },
     ],
   };
+}
+
+function readPrevious(file: string): DashboardFile | null {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')) as DashboardFile;
+  } catch {
+    return null;
+  }
 }
 
 export function writeAtomic(file: string, data: string): void {
@@ -514,6 +559,7 @@ async function main(): Promise<void> {
     reader: new CalendarReader(cfg, tokens),
     ncl: nclRunner(root),
     alertsDb: process.env.ALERTS_DB ?? path.join(os.homedir(), 'nanoclaw-alerts', 'alerts.db'),
+    previous: readPrevious(out),
   });
   const json = JSON.stringify(file, null, 2);
   if (args.includes('--print')) console.log(json);
