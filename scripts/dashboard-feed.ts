@@ -517,7 +517,7 @@ export async function collectTasks(
         const d = dueRow(due, today, tz);
         rows.push({
           title: it.title,
-          detail: ['Reminders', it.list, d.when].filter(Boolean).join(' · '),
+          detail: ['Reminders', it.list === 'Reminders' ? '' : it.list, d.when].filter(Boolean).join(' · '),
           status: d.status,
           time: due,
           sort: due ?? '9',
