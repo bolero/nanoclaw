@@ -37,6 +37,7 @@ import { log } from '../log.js';
 import { getUser } from '../modules/permissions/db/users.js';
 import type { ChannelAdapter, ChannelDefaults, ChannelSetup, OutboundMessage } from './adapter.js';
 import { normalizeOptions, type RawOption } from './ask-question.js';
+import { isQuietNow, readQuietHours } from '../quiet-hours.js';
 import { registerChannelAdapter } from './channel-registry.js';
 import { createAppHttpServer, EventHub, type AppApiDeps, type ConversationSummary } from './app/http.js';
 import { conversationOwner, parseConversationId } from './app/ids.js';
@@ -126,6 +127,7 @@ export function readAppChannelConfig(): AppChannelConfig | null {
             .map((a) => a.trim())
             .filter(Boolean),
           timezone: TIMEZONE,
+          isQuiet: (now: Date) => isQuietNow(readQuietHours(), TIMEZONE, now),
         }
       : null;
   return {

@@ -64,3 +64,11 @@ All routes are under `/v1`; everything except `health` and `pair` needs `Authori
 Message: `{id, rev, conversationId, direction: in|out, kind: text|card, text (Markdown), card?: {questionId, title, question, options[{label, value, style?}], resolution?}, files[{id, filename, mimeType, size}], senderName, failure, createdAt, updatedAt}`.
 
 The channel keeps its own store in `data/app-channel/` (devices, pairing codes, message mirror, files, avatars); routing state stays in the central DB.
+
+## Quiet hours (install-wide)
+
+One setting, `data/quiet-hours.json`, read live: app pushes go silent (passive) inside the window, except for
+`APP_PUSH_URGENT_AGENTS`, and agents check it with `ncl quiet-hours get` before non-urgent messages.
+Change it with `ncl quiet-hours set [--enabled true|false] [--start HH:MM] [--end HH:MM]` (install timezone).
+Agents may run `set` on a person's request; it is approval-gated, so the owner confirms on a card. Until the file
+exists, `APP_PUSH_QUIET_HOURS` (`21-7` or `off`) is the default.

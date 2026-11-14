@@ -35,6 +35,8 @@ export interface PushConfig {
   /** Agent folders whose pushes break through quiet hours. */
   urgentAgents: string[];
   timezone: string;
+  /** Live install-wide setting (src/quiet-hours.ts); overrides the static quietHours window. */
+  isQuiet?: (now: Date) => boolean;
 }
 
 export interface PushDecision {
@@ -62,7 +64,7 @@ export function decidePush(input: {
   createdAt: string;
   live: boolean;
   agentFolder: string | null;
-  config: Pick<PushConfig, 'quietHours' | 'urgentAgents' | 'timezone'>;
+  config: Pick<PushConfig, 'quietHours' | 'urgentAgents' | 'timezone' | 'isQuiet'>;
   now?: Date;
 }): PushDecision {
   const now = input.now ?? new Date();
@@ -71,7 +73,9 @@ export function decidePush(input: {
     const gap = Date.parse(input.createdAt) - Date.parse(input.lastInboundAt);
     if (gap < PROACTIVE_GAP_MS) return { send: false, level: 'active', reason: 'reply to a recent message' };
   }
-  const quiet = inQuietHours(localHour(now, input.config.timezone), input.config.quietHours);
+  const quiet = input.config.isQuiet
+    ? input.config.isQuiet(now)
+    : inQuietHours(localHour(now, input.config.timezone), input.config.quietHours);
   if (!quiet) return { send: true, level: 'active', reason: input.isCard ? 'needs you' : 'agent spoke first' };
   if (input.agentFolder && input.config.urgentAgents.includes(input.agentFolder)) {
     return { send: true, level: 'time-sensitive', reason: 'urgent agent in quiet hours' };
