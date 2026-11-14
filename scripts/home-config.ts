@@ -74,6 +74,25 @@ export interface HomeConfig {
   };
   /** Optional: the app's Today/Ops boards (scripts/dashboard-feed.ts). */
   dashboard?: DashboardConfig;
+  /** Optional: deterministic attachment archiving rules (scripts/mail-autoarchive.ts). No model is involved. */
+  mail_archive?: MailArchiveRule[];
+}
+
+/** Save matching mail attachments to Paperless. Matching is exact; nothing is interpreted. */
+export interface MailArchiveRule {
+  id: string;
+  /** Google account (from `google_accounts`) with gmail.readonly. */
+  account: string;
+  /** Exact sender address. */
+  from: string;
+  /** Exact attachment filename (case-insensitive). */
+  attachment: string;
+  /** Paperless title prefix; the mail date is appended (YYYY-MM-DD). */
+  title: string;
+  /** App user handle told about each save and each failure (`app:<handle>` Home chat). */
+  notify?: string;
+  /** Give the Paperless Family group view access (default false: private). */
+  share?: boolean;
 }
 
 export interface DashboardConfig {
@@ -190,6 +209,7 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
       'personal_watch',
       'schedule',
       'dashboard',
+      'mail_archive',
     ],
     [
       'version',
@@ -452,6 +472,38 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
     }
   }
 
+  let mail_archive: MailArchiveRule[] | undefined;
+  if (top.mail_archive !== undefined) {
+    mail_archive = v.arr(top.mail_archive, 'mail_archive').map((x, i) => {
+      const w = `mail_archive[${i}]`;
+      const o = v.obj(
+        x,
+        w,
+        ['id', 'account', 'from', 'attachment', 'title', 'notify', 'share'],
+        ['id', 'account', 'from', 'attachment', 'title'],
+      );
+      const account = v.str(o.account, `${w}.account`);
+      if (account && !accountIds.has(account)) v.err(`${w}.account`, `unknown google account "${account}"`);
+      const acct = accounts.find((a) => a.id === account);
+      if (acct && !acct.scopes.includes('gmail.readonly'))
+        v.err(`${w}.account`, `account "${account}" lacks gmail.readonly`);
+      const rule: MailArchiveRule = {
+        id: v.str(o.id, `${w}.id`, ID),
+        account,
+        from: v.str(o.from, `${w}.from`, EMAIL).toLowerCase(),
+        attachment: v.str(o.attachment, `${w}.attachment`, /^[^/\\"\s][^/\\"]{0,149}$/),
+        title: v.str(o.title, `${w}.title`, /^[^\n]{1,100}$/),
+      };
+      if (o.notify !== undefined) rule.notify = v.str(o.notify, `${w}.notify`, /^[a-z0-9][a-z0-9-]{0,31}$/);
+      if (o.share !== undefined) {
+        if (typeof o.share !== 'boolean') v.err(`${w}.share`, 'must be true or false');
+        rule.share = o.share === true;
+      }
+      return rule;
+    });
+    v.uniqueIds(mail_archive, 'mail_archive');
+  }
+
   if (v.problems.length) throw new HomeConfigError(v.problems);
   return {
     version: 1,
@@ -466,6 +518,7 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
     personal_watch,
     schedule,
     ...(dashboard ? { dashboard } : {}),
+    ...(mail_archive ? { mail_archive } : {}),
   };
 }
 

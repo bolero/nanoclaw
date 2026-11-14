@@ -7,6 +7,7 @@
  *   ncl app devices [--user <handle>]
  *   ncl app revoke --id <device id>
  *   ncl app avatar --agent <folder> [--file <image>] [--color <#rrggbb>]
+ *   ncl app notify --user <handle> --text <text> [--sender <name>]
  */
 import { randomUUID } from 'crypto';
 import fs from 'fs';
@@ -26,6 +27,7 @@ import { addMember } from '../../modules/permissions/db/agent-group-members.js';
 import { upsertUser } from '../../modules/permissions/db/users.js';
 import { resolveWiringDefaults } from '../channel-defaults.js';
 import { agentConversationId, FOLDER_RE, homeConversationId, parseHandle } from './ids.js';
+import { getChannelAdapter } from '../channel-registry.js';
 import { getAppStore } from './instance.js';
 
 const CHANNEL = 'app';
@@ -206,5 +208,31 @@ register({
       if (previous) fs.rmSync(path.join(store.avatarsDir, path.basename(previous)), { force: true });
     }
     return store.setAgentMeta(folder, { avatarFile, color });
+  },
+});
+
+register({
+  name: 'app-notify',
+  description:
+    "Post a one-line notice from a host job into a person's Home chat in the app (with push). Agents never see it. Usage: ncl app notify --user <handle> --text <text> [--sender <name>]",
+  access: 'open',
+  hostOnly: true,
+  resource: 'app',
+  parseArgs: (raw) => {
+    const text = str(raw, 'text')!.trim();
+    if (!text || text.length > 2000) throw new Error('--text must be 1..2000 characters');
+    const sender = str(raw, 'sender', false)?.trim().slice(0, 60) || null;
+    return { handle: handleArg(raw), text, sender };
+  },
+  handler: async ({ handle, text, sender }: { handle: string; text: string; sender: string | null }) => {
+    const adapter = getChannelAdapter(CHANNEL);
+    if (!adapter) throw new Error('the app channel is not running');
+    const conversation = homeConversationId(handle);
+    const id = await adapter.deliver(conversation, null, {
+      kind: 'chat',
+      content: { text, ...(sender ? { sender } : {}) },
+    });
+    if (!id) throw new Error('nothing was delivered');
+    return { conversation, id };
   },
 });

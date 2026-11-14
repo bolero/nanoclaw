@@ -105,3 +105,14 @@ dashboard:
     reminders_url: https://bridge-host.example.ts.net/mcp
     omnifocus_url: https://bridge-host.example.ts.net:8445/mcp
   weather: {latitude: 52.37, longitude: 4.90, label: Home, unit: celsius}   # unit: celsius | fahrenheit; provider: open-meteo (default) | nws (US only)
+
+# Optional: save matching attachments to Paperless with no model involved (scripts/mail-autoarchive.ts,
+# hourly timer). Exact sender (Gmail-verified via DMARC/DKIM) and exact attachment filename.
+# mail_archive:
+#   - id: payslips
+#     account: personal          # needs gmail.readonly
+#     from: payroll@example.com
+#     attachment: Payslip.pdf
+#     title: Payslip             # Paperless title: "Payslip YYYY-MM-DD" (mail date)
+#     notify: alex               # optional: one line in this app user's Home chat on save/failure
+#     share: false               # optional: true gives the Paperless Family group view access
