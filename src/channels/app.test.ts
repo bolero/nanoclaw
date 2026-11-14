@@ -250,3 +250,85 @@ describe('app channel', () => {
     expect(await adapter.openDM!('alex')).toBe('app:alex');
   });
 });
+
+describe('app channel push', () => {
+  const sent: Array<{ token: string; env: string; payload: any }> = [];
+  let pushAdapter: ChannelAdapter;
+
+  beforeAll(async () => {
+    const port = await allocateFreePort('127.0.0.1');
+    pushAdapter = createAppAdapter(
+      {
+        port,
+        host: '127.0.0.1',
+        publicUrl: null,
+        push: { keyFile: '', keyId: 'K', teamId: 'T', topic: 'x', quietHours: null, urgentAgents: [], timezone: 'UTC' },
+      },
+      store,
+      {
+        async send(token, env, payload) {
+          sent.push({ token, env, payload });
+          return token === 'dead'.repeat(16) ? { ok: false, status: 410 } : { ok: true, status: 200 };
+        },
+        close() {},
+      },
+    );
+    await pushAdapter.setup(setup);
+    const alexDevice = store.listDevices('alex').find((d) => !d.revokedAt)!;
+    store.setApnsToken(alexDevice.id, 'ab'.repeat(32), 'development');
+  });
+
+  afterAll(async () => {
+    await pushAdapter.teardown();
+  });
+
+  async function settle(): Promise<void> {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  it('pushes when an agent speaks first, with agent name and a clean first line', async () => {
+    sent.length = 0;
+    await pushAdapter.deliver('app:alex:family', null, {
+      kind: 'chat',
+      content: { text: '## School\nConcert on Thursday' },
+    });
+    await settle();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.env).toBe('development');
+    expect(sent[0]!.payload.aps).toMatchObject({
+      alert: { title: 'Family', body: 'School' },
+      'thread-id': 'app:alex:family',
+      'interruption-level': 'active',
+    });
+    expect(sent[0]!.payload.conversationId).toBe('app:alex:family');
+  });
+
+  it('stays quiet for replies, but always pushes a card with the open-card badge', async () => {
+    sent.length = 0;
+    await pushAdapter.deliver('app:alex', null, { kind: 'chat', content: { text: 'Done.' } });
+    await settle();
+    expect(sent).toHaveLength(0);
+    await pushAdapter.deliver('app:alex', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'ask_question',
+        questionId: 'q-push',
+        title: 'Restart?',
+        question: 'Restart gatus?',
+        options: ['Yes', 'No'],
+      },
+    });
+    await settle();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.payload.aps.alert).toEqual({ title: 'Bono', body: 'Restart?: Restart gatus?' });
+    expect(sent[0]!.payload.aps.badge).toBe(1);
+  });
+
+  it('drops a token APNs says is gone', async () => {
+    const alexDevice = store.listDevices('alex').find((d) => !d.revokedAt)!;
+    store.setApnsToken(alexDevice.id, 'dead'.repeat(16), 'production');
+    await pushAdapter.deliver('app:alex:family', null, { kind: 'chat', content: { text: 'Another update' } });
+    await settle();
+    expect(store.listDevices('alex').find((d) => d.id === alexDevice.id)!.apnsToken).toBeNull();
+  });
+});

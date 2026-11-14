@@ -67,6 +67,8 @@ export interface Device {
   lastSeenAt: string | null;
   revokedAt: string | null;
   apnsToken: string | null;
+  /** 'development' (sandbox, direct installs) or 'production' (TestFlight/App Store). */
+  apnsEnv: 'development' | 'production' | null;
 }
 
 export interface AgentMeta {
@@ -101,6 +103,7 @@ interface DeviceRow {
   last_seen_at: string | null;
   revoked_at: string | null;
   apns_token: string | null;
+  apns_env: string | null;
 }
 
 const SCHEMA = `
@@ -199,6 +202,8 @@ export class AppStore {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('busy_timeout = 5000');
     this.db.exec(SCHEMA);
+    const cols = this.db.prepare('PRAGMA table_info(devices)').all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'apns_env')) this.db.exec('ALTER TABLE devices ADD COLUMN apns_env TEXT');
   }
 
   close(): void {
@@ -260,6 +265,7 @@ export class AppStore {
         lastSeenAt: nowIso,
         revokedAt: null,
         apnsToken: null,
+        apnsEnv: null,
       };
       this.db
         .prepare(
@@ -294,8 +300,39 @@ export class AppStore {
     this.db.prepare('UPDATE devices SET last_seen_at = ? WHERE id = ?').run(now, id);
   }
 
-  setApnsToken(id: string, apnsToken: string | null): void {
-    this.db.prepare('UPDATE devices SET apns_token = ? WHERE id = ?').run(apnsToken, id);
+  setApnsToken(id: string, apnsToken: string | null, env: 'development' | 'production' | null = null): void {
+    this.db.prepare('UPDATE devices SET apns_token = ?, apns_env = ? WHERE id = ?').run(apnsToken, env, id);
+  }
+
+  /** Forget a token APNs rejected (app removed, token rotated). */
+  clearApnsToken(apnsToken: string): void {
+    this.db.prepare('UPDATE devices SET apns_token = NULL, apns_env = NULL WHERE apns_token = ?').run(apnsToken);
+  }
+
+  /** Active devices of a user that registered for push. */
+  pushTargets(userHandle: string): Device[] {
+    const rows = this.db
+      .prepare('SELECT * FROM devices WHERE user_handle = ? AND revoked_at IS NULL AND apns_token IS NOT NULL')
+      .all(userHandle) as DeviceRow[];
+    return rows.map(toDevice);
+  }
+
+  /** When the person last wrote in this conversation (null = never). */
+  lastInboundAt(conversationId: string): string | null {
+    const row = this.db
+      .prepare(`SELECT MAX(created_at) AS at FROM messages WHERE conversation_id = ? AND direction = 'in'`)
+      .get(conversationId) as { at: string | null };
+    return row.at;
+  }
+
+  countOpenCards(userHandle: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM messages WHERE user_handle = ? AND kind = 'card'
+           AND json_extract(card_json, '$.resolution') IS NULL`,
+      )
+      .get(userHandle) as { n: number };
+    return row.n;
   }
 
   listDevices(userHandle?: string): Device[] {
@@ -515,6 +552,7 @@ function toDevice(row: DeviceRow): Device {
     lastSeenAt: row.last_seen_at,
     revokedAt: row.revoked_at,
     apnsToken: row.apns_token,
+    apnsEnv: row.apns_env === 'development' || row.apns_env === 'production' ? row.apns_env : null,
   };
 }
 

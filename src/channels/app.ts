@@ -21,8 +21,10 @@
  *
  * See src/channels/app/http.ts for the API, docs/app-channel.md for setup.
  */
+import os from 'os';
 import path from 'path';
 
+import { TIMEZONE } from '../config.js';
 import { getAgentGroup } from '../db/agent-groups.js';
 import {
   getMessagingGroupAgents,
@@ -38,6 +40,15 @@ import { registerChannelAdapter } from './channel-registry.js';
 import { createAppHttpServer, EventHub, type AppApiDeps, type ConversationSummary } from './app/http.js';
 import { conversationOwner, parseConversationId } from './app/ids.js';
 import { getAppStore } from './app/instance.js';
+import {
+  ApnsClient,
+  decidePush,
+  isDeadToken,
+  parseQuietHours,
+  previewLine,
+  type ApnsResult,
+  type PushConfig,
+} from './app/push.js';
 import { newId, type AppMessage, type AppStore, type CardData, type FileRef } from './app/store.js';
 import './app/commands.js';
 
@@ -54,12 +65,35 @@ export const APP_DEFAULTS: ChannelDefaults = {
   mentions: 'dm-only',
 };
 
-const ENV_KEYS = ['APP_CHANNEL_PORT', 'APP_CHANNEL_HOST', 'APP_CHANNEL_PUBLIC_URL'];
+const ENV_KEYS = [
+  'APP_CHANNEL_PORT',
+  'APP_CHANNEL_HOST',
+  'APP_CHANNEL_PUBLIC_URL',
+  'APP_APNS_KEY_FILE',
+  'APP_APNS_KEY_ID',
+  'APP_APNS_TEAM_ID',
+  'APP_APNS_TOPIC',
+  'APP_PUSH_QUIET_HOURS',
+  'APP_PUSH_URGENT_AGENTS',
+];
 
 export interface AppChannelConfig {
   port: number;
   host: string;
   publicUrl: string | null;
+  /** Push is on only when the APNs key file, key id, team id and topic are all set. */
+  push?: PushConfig | null;
+}
+
+/** What delivery needs from APNs; ApnsClient in production, a stub in tests. */
+export interface PushSender {
+  send(
+    token: string,
+    env: 'development' | 'production',
+    payload: Record<string, unknown>,
+    opts?: { collapseId?: string; priority?: 5 | 10 },
+  ): Promise<ApnsResult>;
+  close(): void;
 }
 
 export function readAppChannelConfig(): AppChannelConfig | null {
@@ -70,10 +104,31 @@ export function readAppChannelConfig(): AppChannelConfig | null {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`Invalid APP_CHANNEL_PORT ${JSON.stringify(rawPort)}`);
   }
+  const get = (k: string): string | undefined => process.env[k] || env[k] || undefined;
+  const keyFile = get('APP_APNS_KEY_FILE');
+  const keyId = get('APP_APNS_KEY_ID');
+  const teamId = get('APP_APNS_TEAM_ID');
+  const topic = get('APP_APNS_TOPIC');
+  const push: PushConfig | null =
+    keyFile && keyId && teamId && topic
+      ? {
+          keyFile: keyFile.replace(/^~(?=\/)/, os.homedir()),
+          keyId,
+          teamId,
+          topic,
+          quietHours: parseQuietHours(get('APP_PUSH_QUIET_HOURS')),
+          urgentAgents: (get('APP_PUSH_URGENT_AGENTS') ?? '')
+            .split(',')
+            .map((a) => a.trim())
+            .filter(Boolean),
+          timezone: TIMEZONE,
+        }
+      : null;
   return {
     port,
-    host: process.env.APP_CHANNEL_HOST || env.APP_CHANNEL_HOST || '127.0.0.1',
-    publicUrl: (process.env.APP_CHANNEL_PUBLIC_URL || env.APP_CHANNEL_PUBLIC_URL || '').replace(/\/+$/, '') || null,
+    host: get('APP_CHANNEL_HOST') || '127.0.0.1',
+    publicUrl: (get('APP_CHANNEL_PUBLIC_URL') || '').replace(/\/+$/, '') || null,
+    push,
   };
 }
 
@@ -102,10 +157,72 @@ function guessMime(filename: string): string {
   return map[ext] ?? 'application/octet-stream';
 }
 
-export function createAppAdapter(config: AppChannelConfig, store: AppStore = getAppStore()): ChannelAdapter {
+export function createAppAdapter(
+  config: AppChannelConfig,
+  store: AppStore = getAppStore(),
+  pushSender?: PushSender | null,
+): ChannelAdapter {
   const hub = new EventHub();
   let setupConfig: ChannelSetup | null = null;
   let server: ReturnType<typeof createAppHttpServer> | null = null;
+  let push: PushSender | null = pushSender ?? null;
+
+  /** The agents answering a conversation, highest priority first. */
+  async function conversationAgents(conversationId: string): Promise<Array<{ folder: string; name: string }>> {
+    const mg = await getMessagingGroupByPlatform(APP_CHANNEL, conversationId);
+    if (!mg) return [];
+    const wirings = (await getMessagingGroupAgents(mg.id)).sort((a, b) => b.priority - a.priority);
+    const out: Array<{ folder: string; name: string }> = [];
+    for (const w of wirings) {
+      const ag = await getAgentGroup(w.agent_group_id);
+      if (ag) out.push({ folder: ag.folder, name: ag.name });
+    }
+    return out;
+  }
+
+  async function notify(message: AppMessage): Promise<void> {
+    if (!push || !config.push) return;
+    const targets = store.pushTargets(message.userHandle);
+    if (targets.length === 0) return;
+    const agent = (await conversationAgents(message.conversationId))[0] ?? null;
+    const decision = decidePush({
+      isCard: message.kind === 'card',
+      lastInboundAt: store.lastInboundAt(message.conversationId),
+      createdAt: message.createdAt,
+      live: hub.hasClients(message.userHandle),
+      agentFolder: agent?.folder ?? null,
+      config: config.push,
+    });
+    if (!decision.send) {
+      log.debug('App push skipped', { reason: decision.reason });
+      return;
+    }
+    const title = agent?.name ?? 'Bono';
+    const body =
+      message.kind === 'card' && message.card
+        ? previewLine(`${message.card.title}: ${message.card.question}`)
+        : previewLine(message.text) || (message.files.length ? 'Sent an attachment' : 'New message');
+    const payload = {
+      aps: {
+        alert: { title, body },
+        badge: store.countOpenCards(message.userHandle),
+        sound: decision.level === 'passive' ? undefined : 'default',
+        'thread-id': message.conversationId,
+        'interruption-level': decision.level,
+      },
+      conversationId: message.conversationId,
+      messageId: message.id,
+    };
+    for (const device of targets) {
+      const result = await push.send(device.apnsToken!, device.apnsEnv ?? 'development', payload, {
+        collapseId: message.id,
+        priority: decision.level === 'passive' ? 5 : 10,
+      });
+      if (result.ok) continue;
+      if (isDeadToken(result)) store.clearApnsToken(device.apnsToken!);
+      log.warn('App push failed', { deviceId: device.id, status: result.status, reason: result.reason });
+    }
+  }
 
   async function conversationExists(conversationId: string): Promise<boolean> {
     const mg = await getMessagingGroupByPlatform(APP_CHANNEL, conversationId);
@@ -254,11 +371,23 @@ export function createAppAdapter(config: AppChannelConfig, store: AppStore = get
           resolve();
         });
       });
-      log.info('App channel listening', { host: config.host, port: config.port });
+      if (!push && config.push) {
+        try {
+          push = new ApnsClient(config.push);
+          // eslint-disable-next-line no-catch-all/no-catch-all -- a bad key turns push off; the channel still runs
+        } catch (err) {
+          log.error('App channel: APNs key could not be loaded, push is off', { err });
+        }
+      }
+      log.info('App channel listening', { host: config.host, port: config.port, push: push !== null });
     },
 
     async teardown(): Promise<void> {
       hub.closeAll();
+      if (!pushSender) {
+        push?.close();
+        push = null;
+      }
       if (server) {
         const s = server;
         server = null;
@@ -335,7 +464,7 @@ export function createAppAdapter(config: AppChannelConfig, store: AppStore = get
       });
       hub.publishMessage(stored);
       hub.publishTyping(parsed.handle, platformId, null);
-      // Push notifications (APNs) hook in here once a key is configured.
+      notify(stored).catch((err) => log.warn('App push threw', { err }));
       return id;
     },
 

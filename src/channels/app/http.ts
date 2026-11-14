@@ -17,7 +17,7 @@
  *   GET  /v1/events                       SSE: message | typing events; honours Last-Event-ID / ?after=
  *   GET  /v1/files/:id                    raw bytes
  *   GET  /v1/agents/:folder/avatar        image bytes (404 when none set)
- *   PUT  /v1/devices/me/push              { apnsToken | null }
+ *   PUT  /v1/devices/me/push              { apnsToken | null, environment: development|production }
  *
  * Conversation ids are the channel's platform ids (see ./ids.ts) and are
  * always checked against the caller's own handle.
@@ -254,7 +254,8 @@ export function createAppHttpServer(deps: AppApiDeps, hub: EventHub): http.Serve
       const body = await readJson(req);
       const token =
         typeof body.apnsToken === 'string' && /^[0-9a-fA-F]{32,200}$/.test(body.apnsToken) ? body.apnsToken : null;
-      deps.store.setApnsToken(device.id, token);
+      const env = body.environment === 'production' ? 'production' : 'development';
+      deps.store.setApnsToken(device.id, token, token ? env : null);
       return json(res, 200, { ok: true });
     }
 
