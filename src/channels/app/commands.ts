@@ -103,7 +103,8 @@ register({
         channel_type: CHANNEL,
         platform_id: platformId,
         instance: CHANNEL,
-        name: home ? `${handle} · Home` : `${handle} · ${ag.name}`,
+        // Becomes the agent's destination name (app-<handle>-home), which tells it the message came from the app.
+        name: home ? `app ${handle} home` : `app ${handle} ${ag.name}`,
         is_group: 0,
         unknown_sender_policy: 'strict',
         created_at: now,

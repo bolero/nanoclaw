@@ -38,7 +38,7 @@ ncl app revoke --id <device id>
 ncl app avatar --agent family --file family.png --color '#f59e0b'
 ```
 
-The person is NanoClaw user `app:<handle>`. `connect` adds them as a member of the agent group; owner/admin roles are granted as usual (`ncl roles grant`). Conversation ids are platform ids: `app:<handle>` (Home) and `app:<handle>:<agentFolder>`.
+The person is NanoClaw user `app:<handle>`. `connect` adds them as a member of the agent group; owner/admin roles are granted as usual (`ncl roles grant`). Conversation ids are platform ids: `app:<handle>` (Home) and `app:<handle>:<agentFolder>`. Agents see them as destinations named `app-<handle>-home` / `app-<handle>-<agent>`; the resident `app-formatting` container skill tells them that origin means full Markdown is fine.
 
 ## API
 
