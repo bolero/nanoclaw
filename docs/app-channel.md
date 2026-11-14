@@ -72,3 +72,13 @@ One setting, `data/quiet-hours.json`, read live: app pushes go silent (passive) 
 Change it with `ncl quiet-hours set [--enabled true|false] [--start HH:MM] [--end HH:MM]` (install timezone).
 Agents may run `set` on a person's request; it is approval-gated, so the owner confirms on a card. Until the file
 exists, `APP_PUSH_QUIET_HOURS` (`21-7` or `off`) is the default.
+
+## Message categories and card lifecycle
+
+- `category` on each message: `brief`, `suggestion`, `done`, `failed`, `notice` or null. Agents set it with a hidden
+  first line `<!-- kind: suggestion -->` (stripped before storing; see `container/skills/app-formatting`). Host notices
+  from `ncl app notify` are `notice`; delivery-failure notices are `failed`.
+- Cards (`card.status`): answering with a decline-like option (No, Not now, Later, Deny, Skip…) sets `declined`, any other
+  option `working`. The agent's next `done`/`failed` message in the same conversation within 24 hours sets `completed` /
+  `failed` and `resultMessageId`. Host terminal edits (approvals) set `declined` when the resolution says denied/expired.
+- Conversations carry `shared: true` when more than one app user has a chat with the same agent (e.g. a family agent).

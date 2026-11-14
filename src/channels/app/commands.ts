@@ -230,7 +230,7 @@ register({
     const conversation = homeConversationId(handle);
     const id = await adapter.deliver(conversation, null, {
       kind: 'chat',
-      content: { text, ...(sender ? { sender } : {}) },
+      content: { text, category: 'notice', ...(sender ? { sender } : {}) },
     });
     if (!id) throw new Error('nothing was delivered');
     return { conversation, id };

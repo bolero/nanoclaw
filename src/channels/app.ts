@@ -51,7 +51,15 @@ import {
   type ApnsResult,
   type PushConfig,
 } from './app/push.js';
-import { newId, type AppMessage, type AppStore, type CardData, type FileRef } from './app/store.js';
+import {
+  MESSAGE_CATEGORIES,
+  newId,
+  type AppMessage,
+  type AppStore,
+  type CardData,
+  type FileRef,
+  type MessageCategory,
+} from './app/store.js';
 import './app/commands.js';
 
 export const APP_CHANNEL = 'app';
@@ -266,9 +274,16 @@ export function createAppAdapter(
   }
 
   async function listConversations(handle: string): Promise<ConversationSummary[]> {
-    const mgs = (await getMessagingGroupsByChannel(APP_CHANNEL)).filter(
-      (mg) => conversationOwner(mg.platform_id) === handle,
-    );
+    const all = await getMessagingGroupsByChannel(APP_CHANNEL);
+    // Which app users talk to each agent folder: more than one means the agent is shared.
+    const usersByFolder = new Map<string, Set<string>>();
+    for (const mg of all) {
+      const p = parseConversationId(mg.platform_id);
+      if (!p?.folder) continue;
+      if (!usersByFolder.has(p.folder)) usersByFolder.set(p.folder, new Set());
+      usersByFolder.get(p.folder)!.add(p.handle);
+    }
+    const mgs = all.filter((mg) => conversationOwner(mg.platform_id) === handle);
     const out: ConversationSummary[] = [];
     for (const mg of mgs) {
       const wirings = (await getMessagingGroupAgents(mg.id)).sort((a, b) => b.priority - a.priority);
@@ -295,6 +310,7 @@ export function createAppAdapter(
         title: kind === 'home' ? 'Home' : (agents[0]?.name ?? parsed?.folder ?? mg.platform_id),
         agents,
         lastMessage: store.lastMessage(mg.platform_id),
+        shared: !!parsed?.folder && (usersByFolder.get(parsed.folder)?.size ?? 0) > 1,
       });
     }
     // Home first, then most recently active.
@@ -383,6 +399,7 @@ export function createAppAdapter(
           resolution: `${option.selectedLabel} by ${senderName}`,
           answeredBy: `app:${device.userHandle}`,
           answeredAt: new Date().toISOString(),
+          status: isDecline(option) ? 'declined' : 'working',
         },
       })!;
       hub.publishMessage(updated);
@@ -451,7 +468,15 @@ export function createAppAdapter(
         const terminal = content.terminalCard as { resolution?: unknown } | undefined;
         let updated: AppMessage | null;
         if (existing.card && terminal && typeof terminal.resolution === 'string') {
-          updated = store.updateMessage(existing.id, { card: { ...existing.card, resolution: terminal.resolution } });
+          const declined = /\b(den(y|ied)|declin|reject|expired|cancel)/i.test(terminal.resolution);
+          updated = store.updateMessage(existing.id, {
+            card: {
+              ...existing.card,
+              resolution: terminal.resolution,
+              status: declined ? 'declined' : (existing.card.status ?? 'working'),
+              answeredAt: existing.card.answeredAt ?? new Date().toISOString(),
+            },
+          });
         } else {
           updated = store.updateMessage(existing.id, { text: outboundText(content) });
         }
@@ -463,7 +488,8 @@ export function createAppAdapter(
 
       const id = newId('out');
       let card: CardData | null = null;
-      let text = outboundText(content);
+      const tagged = extractCategory(outboundText(content));
+      let text = tagged.text;
       if (content.type === 'ask_question') {
         if (
           typeof content.questionId !== 'string' ||
@@ -497,8 +523,13 @@ export function createAppAdapter(
         files,
         senderName: typeof content.sender === 'string' ? content.sender : null,
         failure: content.failureNotice === true,
+        category:
+          tagged.category ??
+          (isCategory(content.category) ? content.category : content.failureNotice === true ? 'failed' : null),
       });
       hub.publishMessage(stored);
+      const linked = store.linkCardResult(platformId, stored);
+      if (linked) hub.publishMessage(linked);
       hub.publishTyping(parsed.handle, platformId, null);
       notify(stored).catch((err) => log.warn('App push threw', { err }));
       return id;
@@ -516,6 +547,27 @@ export function createAppAdapter(
   };
 
   return adapter;
+}
+
+/**
+ * Agents may start a message with a hidden first line `<!-- kind: suggestion -->` (brief,
+ * suggestion, done, failed, notice). It is stripped and stored as the message category.
+ */
+export function extractCategory(text: string): { text: string; category: MessageCategory | null } {
+  const m = /^\s*<!--\s*kind\s*:\s*([a-z]+)\s*-->[ \t]*\r?\n?/i.exec(text);
+  if (!m) return { text, category: null };
+  const kind = m[1].toLowerCase();
+  return { text: text.slice(m[0].length), category: isCategory(kind) ? kind : null };
+}
+
+function isCategory(v: unknown): v is MessageCategory {
+  return typeof v === 'string' && (MESSAGE_CATEGORIES as readonly string[]).includes(v);
+}
+
+/** "No", "Not now", "Later", "Deny", "Skip"... */
+export function isDecline(option: { label: string; value: string }): boolean {
+  const re = /^(no\b|not now|later|deny|decline|reject|cancel|dismiss|skip|ignore|stop)/i;
+  return re.test(option.value.trim()) || re.test(option.label.trim());
 }
 
 registerChannelAdapter(APP_CHANNEL, {

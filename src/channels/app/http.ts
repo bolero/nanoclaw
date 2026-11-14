@@ -37,6 +37,8 @@ export interface ConversationSummary {
   title: string;
   agents: Array<{ folder: string; name: string; color: string | null; avatarUrl: string | null }>;
   lastMessage: AppMessage | null;
+  /** Another app user also has a chat with this conversation's agent (e.g. a family agent). */
+  shared: boolean;
 }
 
 export interface UploadedAttachment {

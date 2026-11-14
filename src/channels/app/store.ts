@@ -34,7 +34,20 @@ export interface CardData {
   resolution?: string;
   answeredBy?: string;
   answeredAt?: string;
+  /**
+   * Lifecycle after the answer: working (accepted, the agent is on it), declined, completed
+   * or failed (set when the agent's next done/failed message arrives; see linkCardResult).
+   */
+  status?: CardStatus;
+  /** The message that reported the outcome. */
+  resultMessageId?: string;
 }
+
+export type CardStatus = 'working' | 'declined' | 'completed' | 'failed';
+
+/** What an outgoing message is, for the app's Home: set by the agent's hidden kind tag or the sender. */
+export type MessageCategory = 'brief' | 'suggestion' | 'done' | 'failed' | 'notice';
+export const MESSAGE_CATEGORIES: readonly MessageCategory[] = ['brief', 'suggestion', 'done', 'failed', 'notice'];
 
 export interface FileRef {
   id: string;
@@ -55,6 +68,7 @@ export interface AppMessage {
   files: FileRef[];
   senderName: string | null;
   failure: boolean;
+  category: MessageCategory | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -90,6 +104,7 @@ interface MessageRow {
   files_json: string;
   sender_name: string | null;
   failure: number;
+  category: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -204,6 +219,8 @@ export class AppStore {
     this.db.exec(SCHEMA);
     const cols = this.db.prepare('PRAGMA table_info(devices)').all() as Array<{ name: string }>;
     if (!cols.some((c) => c.name === 'apns_env')) this.db.exec('ALTER TABLE devices ADD COLUMN apns_env TEXT');
+    const mcols = this.db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>;
+    if (!mcols.some((c) => c.name === 'category')) this.db.exec('ALTER TABLE messages ADD COLUMN category TEXT');
   }
 
   close(): void {
@@ -351,14 +368,19 @@ export class AppStore {
 
   // ── Messages ──
 
-  insertMessage(msg: Omit<AppMessage, 'rev' | 'updatedAt' | 'createdAt'> & { createdAt?: string }): AppMessage {
+  insertMessage(
+    msg: Omit<AppMessage, 'rev' | 'updatedAt' | 'createdAt' | 'category'> & {
+      createdAt?: string;
+      category?: MessageCategory | null;
+    },
+  ): AppMessage {
     const createdAt = msg.createdAt ?? new Date().toISOString();
     const rev = this.nextRev();
     this.db
       .prepare(
         `INSERT INTO messages (id, rev, conversation_id, user_handle, direction, kind, text, card_json,
-                               files_json, sender_name, failure, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                               files_json, sender_name, failure, category, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         msg.id,
@@ -372,6 +394,7 @@ export class AppStore {
         JSON.stringify(msg.files),
         msg.senderName,
         msg.failure ? 1 : 0,
+        msg.category ?? null,
         createdAt,
         createdAt,
       );
@@ -405,6 +428,28 @@ export class AppStore {
         id,
       );
     return this.getMessage(id);
+  }
+
+  /**
+   * Attach an agent's done/failed report to the newest card in the same conversation that is
+   * still working (answered within the last day). Returns the updated card, if any.
+   */
+  linkCardResult(conversationId: string, result: AppMessage, now = new Date()): AppMessage | null {
+    if (result.category !== 'done' && result.category !== 'failed') return null;
+    const since = new Date(now.getTime() - 24 * 3600 * 1000).toISOString();
+    const row = this.db
+      .prepare(
+        `SELECT * FROM messages WHERE conversation_id = ? AND kind = 'card'
+           AND json_extract(card_json, '$.status') = 'working'
+           AND json_extract(card_json, '$.answeredAt') >= ?
+         ORDER BY rev DESC LIMIT 1`,
+      )
+      .get(conversationId, since) as MessageRow | undefined;
+    if (!row) return null;
+    const card = toMessage(row).card!;
+    return this.updateMessage(row.id, {
+      card: { ...card, status: result.category === 'done' ? 'completed' : 'failed', resultMessageId: result.id },
+    });
   }
 
   findCardByQuestion(questionId: string): AppMessage[] {
@@ -569,6 +614,7 @@ function toMessage(row: MessageRow): AppMessage {
     files: JSON.parse(row.files_json) as FileRef[],
     senderName: row.sender_name,
     failure: row.failure === 1,
+    category: MESSAGE_CATEGORIES.includes(row.category as MessageCategory) ? (row.category as MessageCategory) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
