@@ -75,23 +75,35 @@ class HttpError extends Error {
   }
 }
 
-/** Live SSE subscribers per user handle. */
+/** Live SSE subscribers per user handle, and which devices have the app open. */
 export class EventHub {
   private readonly clients = new Map<string, Set<http.ServerResponse>>();
+  private readonly liveDevices = new Map<string, number>();
 
-  add(userHandle: string, res: http.ServerResponse): void {
+  add(userHandle: string, res: http.ServerResponse, deviceId?: string): void {
     let set = this.clients.get(userHandle);
     if (!set) {
       set = new Set();
       this.clients.set(userHandle, set);
     }
     set.add(res);
+    if (deviceId) this.liveDevices.set(deviceId, (this.liveDevices.get(deviceId) ?? 0) + 1);
   }
 
-  remove(userHandle: string, res: http.ServerResponse): void {
+  remove(userHandle: string, res: http.ServerResponse, deviceId?: string): void {
     const set = this.clients.get(userHandle);
     set?.delete(res);
     if (set && set.size === 0) this.clients.delete(userHandle);
+    if (deviceId) {
+      const n = (this.liveDevices.get(deviceId) ?? 1) - 1;
+      if (n > 0) this.liveDevices.set(deviceId, n);
+      else this.liveDevices.delete(deviceId);
+    }
+  }
+
+  /** True while this device holds an open event stream (the app is on screen). */
+  isDeviceLive(deviceId: string): boolean {
+    return this.liveDevices.has(deviceId);
   }
 
   publishMessage(message: AppMessage): void {
@@ -224,7 +236,7 @@ export function createAppHttpServer(deps: AppApiDeps, hub: EventHub): http.Serve
     }
 
     if (method === 'GET' && route[0] === 'events' && route.length === 1) {
-      return openEventStream(req, res, url, handle);
+      return openEventStream(req, res, url, handle, device.id);
     }
 
     if (method === 'GET' && route[0] === 'files' && route.length === 2) {
@@ -274,7 +286,13 @@ export function createAppHttpServer(deps: AppApiDeps, hub: EventHub): http.Serve
     return { id: `app:${handle}`, handle, name: await deps.userDisplayName(handle) };
   }
 
-  function openEventStream(req: http.IncomingMessage, res: http.ServerResponse, url: URL, handle: string): void {
+  function openEventStream(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    handle: string,
+    deviceId: string,
+  ): void {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -289,11 +307,11 @@ export function createAppHttpServer(deps: AppApiDeps, hub: EventHub): http.Serve
         res.write(`id: ${message.rev}\nevent: message\ndata: ${JSON.stringify(message)}\n\n`);
       }
     }
-    hub.add(handle, res);
+    hub.add(handle, res, deviceId);
     const heartbeat = setInterval(() => res.write(': ping\n\n'), SSE_HEARTBEAT_MS);
     req.on('close', () => {
       clearInterval(heartbeat);
-      hub.remove(handle, res);
+      hub.remove(handle, res, deviceId);
     });
   }
 

@@ -182,14 +182,15 @@ export function createAppAdapter(
 
   async function notify(message: AppMessage): Promise<void> {
     if (!push || !config.push) return;
-    const targets = store.pushTargets(message.userHandle);
+    // A device with the app open already shows the message; the others still get it.
+    const targets = store.pushTargets(message.userHandle).filter((d) => !hub.isDeviceLive(d.id));
     if (targets.length === 0) return;
     const agent = (await conversationAgents(message.conversationId))[0] ?? null;
     const decision = decidePush({
       isCard: message.kind === 'card',
       lastInboundAt: store.lastInboundAt(message.conversationId),
       createdAt: message.createdAt,
-      live: hub.hasClients(message.userHandle),
+      live: false,
       agentFolder: agent?.folder ?? null,
       config: config.push,
     });

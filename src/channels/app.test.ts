@@ -254,9 +254,11 @@ describe('app channel', () => {
 describe('app channel push', () => {
   const sent: Array<{ token: string; env: string; payload: any }> = [];
   let pushAdapter: ChannelAdapter;
+  let pushBase: string;
 
   beforeAll(async () => {
     const port = await allocateFreePort('127.0.0.1');
+    pushBase = `http://127.0.0.1:${port}`;
     pushAdapter = createAppAdapter(
       {
         port,
@@ -322,6 +324,37 @@ describe('app channel push', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]!.payload.aps.alert).toEqual({ title: 'Bono', body: 'Restart?: Restart gatus?' });
     expect(sent[0]!.payload.aps.badge).toBe(1);
+  });
+
+  it('skips only the device that has the app open', async () => {
+    // Two fresh alex devices against the push adapter; device A opens the event stream.
+    const pairHere = async (name: string): Promise<{ token: string; deviceId: string }> => {
+      const { code } = (await ncl('app-pair', { user: 'alex' })) as { code: string };
+      const res = await fetch(`${pushBase}/v1/pair`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, deviceName: name }),
+      });
+      return (await res.json()) as { token: string; deviceId: string };
+    };
+    for (const d of store.listDevices('alex')) store.setApnsToken(d.id, null);
+    const a = await pairHere('ipad');
+    const b = await pairHere('phone');
+    store.setApnsToken(a.deviceId, 'aa'.repeat(32), 'development');
+    store.setApnsToken(b.deviceId, 'bb'.repeat(32), 'development');
+
+    const controller = new AbortController();
+    const sse = await fetch(`${pushBase}/v1/events`, {
+      headers: { Authorization: `Bearer ${a.token}` },
+      signal: controller.signal,
+    });
+    await sse.body!.getReader().read(); // ': connected'
+
+    sent.length = 0;
+    await pushAdapter.deliver('app:alex:family', null, { kind: 'chat', content: { text: 'Pick-up moved to 4 pm' } });
+    await settle();
+    controller.abort();
+    expect(sent.map((x) => x.token)).toEqual(['bb'.repeat(32)]);
   });
 
   it('drops a token APNs says is gone', async () => {
