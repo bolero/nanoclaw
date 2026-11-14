@@ -650,13 +650,49 @@ export function taskTitle(prompt: string, seriesId?: string): string {
   return first.slice(0, 57) + '…';
 }
 
-export async function collectScheduledTasks(ncl: NclRunner, tz: string): Promise<Section> {
+/** Latest entry of a task run log ("YYYY-MM-DD HH:MM — text", newest last). */
+export function lastLogEntry(text: string): string | null {
+  const entries = text.split(/\n(?=\d{4}-\d{2}-\d{2} \d{2}:\d{2} — )/);
+  const last = entries[entries.length - 1]?.trim();
+  return last ? last.replace(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} — /, '') : null;
+}
+
+/** Agents begin a scheduled run's summary with FAILED: or PARTIAL: when the job was not done. */
+export function runOutcome(entry: string | null): { status: 'bad' | 'warn'; note: string } | null {
+  const m = entry && /^\**\s*(FAILED|PARTIAL)\s*:?\**\s*:?\s*(.*)/is.exec(entry);
+  if (!m) return null;
+  const note = m[2].replace(/\s+/g, ' ').replace(/[*_`]/g, '').slice(0, 140);
+  return { status: m[1].toUpperCase() === 'FAILED' ? 'bad' : 'warn', note: `${m[1].toLowerCase()}: ${note}` };
+}
+
+export type LogReader = (folder: string, logPath: string) => string | null;
+
+export const groupLogReader =
+  (groupsDir: string): LogReader =>
+  (folder, logPath) => {
+    if (!/^[a-z0-9][a-z0-9_-]*$/i.test(folder) || !/^tasks\/[\w.-]+\.md$/.test(logPath)) return null;
+    try {
+      const file = path.join(groupsDir, folder, logPath);
+      const st = fs.statSync(file);
+      const fd = fs.openSync(file, 'r');
+      const len = Math.min(st.size, 8192);
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, st.size - len);
+      fs.closeSync(fd);
+      return buf.toString('utf8');
+    } catch {
+      return null;
+    }
+  };
+
+export async function collectScheduledTasks(ncl: NclRunner, tz: string, readLog?: LogReader): Promise<Section> {
   const section: Section = { id: 'tasks', kind: 'rows', title: 'Scheduled tasks' };
   const [tasks, groups] = (await Promise.all([ncl(['tasks', 'list']), ncl(['groups', 'list'])])) as [
     Array<Record<string, unknown>>,
-    Array<{ id: string; name: string }>,
+    Array<{ id: string; name: string; folder?: string }>,
   ];
   const names = new Map(groups.map((g) => [g.id, g.name]));
+  const folders = new Map(groups.map((g) => [g.id, g.folder ?? '']));
   const fmt = (iso: unknown) =>
     typeof iso === 'string'
       ? new Intl.DateTimeFormat('en-GB', { timeZone: tz, weekday: 'short', hour: '2-digit', minute: '2-digit' }).format(
@@ -671,10 +707,13 @@ export async function collectScheduledTasks(ncl: NclRunner, tz: string): Promise
       .map((t) => {
         const failed = Number(t.failed_runs ?? 0);
         const paused = t.status === 'paused';
+        const folder = folders.get(String(t.agent_group_id));
+        const log = readLog && folder && typeof t.log === 'string' ? readLog(folder, t.log) : null;
+        const outcome = runOutcome(log ? lastLogEntry(log) : null);
         return {
           title: `${names.get(String(t.agent_group_id)) ?? 'agent'} · ${taskTitle(String(t.prompt ?? ''), t.series_id as string | undefined)}`,
-          detail: `last ${fmt(t.last_run)} · next ${paused ? 'paused' : fmt(t.next_run ?? t.process_after)}${failed ? ` · ${failed} failed` : ''}`,
-          status: (paused ? 'info' : failed ? 'warn' : 'ok') as RowStatus,
+          detail: `last ${fmt(t.last_run)} · next ${paused ? 'paused' : fmt(t.next_run ?? t.process_after)}${failed ? ` · ${failed} failed` : ''}${outcome ? ` · last run ${outcome.note}` : ''}`,
+          status: (paused ? 'info' : (outcome?.status ?? (failed ? 'warn' : 'ok'))) as RowStatus,
           time: typeof t.last_run === 'string' ? t.last_run : undefined,
         };
       })
@@ -730,6 +769,7 @@ export async function buildDashboard(opts: {
   now?: Date;
   previous?: DashboardFile | null;
   bridges?: TaskBridges | null;
+  readLog?: LogReader;
 }): Promise<DashboardFile> {
   const d = opts.cfg.dashboard;
   if (!d) throw new Error('home.yaml has no dashboard section');
@@ -739,7 +779,7 @@ export async function buildDashboard(opts: {
     guard('events', 'Calendar', 'events', () => collectEvents(opts.cfg, opts.reader, opts.tz, opts.now)),
     guard('services', 'Services', 'rows', () => collectServices(d.gatus_url, fetchFn)),
     guard('approvals', 'Pending approvals', 'rows', () => collectApprovals(opts.ncl)),
-    guard('tasks', 'Scheduled tasks', 'rows', () => collectScheduledTasks(opts.ncl, opts.tz)),
+    guard('tasks', 'Scheduled tasks', 'rows', () => collectScheduledTasks(opts.ncl, opts.tz, opts.readLog)),
   ]);
   const alerts = await guard('alerts', 'Alerts, last 24 h', 'rows', () => collectAlerts(opts.alertsDb, opts.now));
   const listNames = new Map(opts.cfg.reminders.lists.map((l) => [l.id, l.name]));
@@ -822,6 +862,7 @@ async function main(): Promise<void> {
     tz: TIMEZONE,
     reader: new CalendarReader(cfg, tokens),
     ncl: nclRunner(root),
+    readLog: groupLogReader(path.join(root, 'groups')),
     alertsDb: process.env.ALERTS_DB ?? path.join(os.homedir(), 'nanoclaw-alerts', 'alerts.db'),
     previous: readPrevious(out),
     bridges: readBridges(cfg),

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import { actionAdd, actionUndo, brief, filter, open, parseSnooze, reply, stats } from './nudges.ts';
+import { actionAdd, actionUndo, backlog, brief, filter, open, parseSnooze, reply, stats } from './nudges.ts';
 
 const DAY = 86_400_000;
 const NOW = Date.parse('2026-11-10T19:00:00Z');
@@ -14,10 +14,56 @@ const item = (id: string, ageDays: number) => ({
 });
 
 describe('nudges', () => {
-  it('filters by age, caps, orders oldest first', () => {
+  it('filters by age and caps; with equal relevance the fresher item comes first', () => {
     const db = open(':memory:');
     const out = filter(db, [item('a', 30), item('b', 5), item('c', 40), item('d', 22), item('e', 60)], opts, NOW);
-    expect(out.map((i) => i.id)).toEqual(['e', 'c', 'a']);
+    expect(out.map((i) => i.id)).toEqual(['d', 'a', 'c']);
+  });
+
+  it('ranks by relevance: overdue, flagged, recently edited beat merely old', () => {
+    const db = open(':memory:');
+    const iso = (d: number) => new Date(NOW + d * DAY).toISOString();
+    const out = filter(
+      db,
+      [
+        item('old', 300),
+        { ...item('flag', 40), flagged: true },
+        { ...item('overdue', 50), due: iso(-3) },
+        { ...item('edited', 60), modified: iso(-2) },
+      ],
+      opts,
+      NOW,
+    );
+    expect(out.map((i) => i.id)).toEqual(['overdue', 'flag', 'edited']);
+  });
+
+  it('sinks nudges that were ignored', () => {
+    const db = open(':memory:');
+    filter(db, [item('a', 30), item('b', 31)], opts, NOW);
+    brief(db, ['reminders:a'], NOW - 8 * DAY); // nudged, never answered
+    const out = filter(db, [item('a', 30), item('b', 31)], { ...opts, cap: 1 }, NOW);
+    expect(out.map((i) => i.id)).toEqual(['b']);
+  });
+
+  it('moves year-old untouched items to the backlog and lists them for cleanup', () => {
+    const db = open(':memory:');
+    const iso = (d: number) => new Date(NOW + d * DAY).toISOString();
+    const out = filter(
+      db,
+      [
+        item('ancient', 2000),
+        { ...item('ancient-due', 2000), due: iso(5) },
+        { ...item('ancient-edited', 2000), modified: iso(-10) },
+        item('recent', 40),
+      ],
+      opts,
+      NOW,
+    );
+    expect(out.map((i) => i.id).sort()).toEqual(['ancient-due', 'ancient-edited', 'recent']);
+    const b = backlog(db, 10, NOW);
+    expect(b.map((r) => r.id)).toEqual(['ancient']);
+    expect(reply(db, 1, 'stop', undefined, NOW).id).toBe('ancient');
+    expect(backlog(db, 10, NOW)).toHaveLength(0);
   });
 
   it('respects cooldown, snooze, drop and done', () => {
@@ -33,7 +79,11 @@ describe('nudges', () => {
     // After 8 days: b is still snoozed; a/c done/dropped.
     expect(filter(db, all, { ...opts, cap: 10 }, NOW + 8 * DAY).map((i) => i.id)).toEqual(['d']);
     // After 15 days: snooze has expired.
-    expect(filter(db, all, { ...opts, cap: 10 }, NOW + 15 * DAY).map((i) => i.id).sort()).toEqual(['b', 'd']);
+    expect(
+      filter(db, all, { ...opts, cap: 10 }, NOW + 15 * DAY)
+        .map((i) => i.id)
+        .sort(),
+    ).toEqual(['b', 'd']);
   });
 
   it('numbers only the latest brief', () => {
@@ -62,6 +112,12 @@ describe('nudges', () => {
     filter(db, [item('a', 30)], opts, NOW);
     brief(db, ['reminders:a'], NOW);
     reply(db, 1, 'done', undefined, NOW);
-    expect(stats(db, 14, NOW)).toEqual({ days: 14, auto_actions: 2, undos: 1, nudged_items: 1, responses: { done: 1 } });
+    expect(stats(db, 14, NOW)).toEqual({
+      days: 14,
+      auto_actions: 2,
+      undos: 1,
+      nudged_items: 1,
+      responses: { done: 1 },
+    });
   });
 });

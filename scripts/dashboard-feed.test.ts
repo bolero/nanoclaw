@@ -399,3 +399,32 @@ describe('buildDashboard', () => {
     expect(out.boards[0]!.sections.map((s) => s.id)).toEqual(['events']);
   });
 });
+
+describe('scheduled task outcomes', () => {
+  it('reads the latest log entry and flags FAILED / PARTIAL runs', async () => {
+    const { lastLogEntry, runOutcome, collectScheduledTasks: collect } = await import('./dashboard-feed.js');
+    const log =
+      '2026-11-12 06:00 — All good.\n2026-11-13 06:00 — FAILED: the Dockhand proxy blocked the update endpoints.\n';
+    expect(lastLogEntry(log)).toBe('FAILED: the Dockhand proxy blocked the update endpoints.');
+    expect(runOutcome('**PARTIAL:** calendars missing')?.status).toBe('warn');
+    expect(runOutcome('Sent the brief.')).toBeNull();
+    const ncl = async (args: string[]) =>
+      args[0] === 'tasks'
+        ? [
+            {
+              agent_group_id: 'g1',
+              series_id: 'weekly-x',
+              prompt: 'Weekly review',
+              status: 'pending',
+              last_run: '2026-11-13T14:00:00Z',
+              log: 'tasks/weekly-x.md',
+            },
+          ]
+        : [{ id: 'g1', name: 'argus', folder: 'argus' }];
+    const s = await collect(ncl as never, 'UTC', (folder, p) =>
+      folder === 'argus' && p === 'tasks/weekly-x.md' ? log : null,
+    );
+    expect(s.rows?.[0].status).toBe('bad');
+    expect(s.rows?.[0].detail).toMatch(/last run failed: the Dockhand proxy blocked/);
+  });
+});
