@@ -156,7 +156,8 @@ export async function collectWeather(
   if (!cfg) return { ...section, error: 'no location configured' };
   const url =
     `https://api.open-meteo.com/v1/forecast?latitude=${cfg.latitude}&longitude=${cfg.longitude}` +
-    '&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min&forecast_days=1&timezone=auto';
+    '&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min&forecast_days=1&timezone=auto' +
+    (cfg.unit === 'fahrenheit' ? '&temperature_unit=fahrenheit' : '');
   const res = await fetchFn(url, { signal: AbortSignal.timeout(10_000) });
   if (!res.ok) return { ...section, error: `weather service ${res.status}` };
   const j = (await res.json()) as {

@@ -83,7 +83,7 @@ export interface DashboardConfig {
   today_calendars: string[];
   /** Gatus base URL for service health on Ops. */
   gatus_url?: string;
-  weather?: { latitude: number; longitude: number; label: string };
+  weather?: { latitude: number; longitude: number; label: string; unit?: 'celsius' | 'fahrenheit' };
 }
 
 export const DEFAULT_HOME_CONFIG_PATH = path.join(os.homedir(), '.config', 'nanoclaw', 'home.yaml');
@@ -385,7 +385,12 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
       dashboard.gatus_url = v.str(d.gatus_url, 'dashboard.gatus_url', /^https?:\/\/[^\s]+$/).replace(/\/+$/, '');
     }
     if (d.weather !== undefined) {
-      const w = v.obj(d.weather, 'dashboard.weather', ['latitude', 'longitude', 'label']);
+      const w = v.obj(
+        d.weather,
+        'dashboard.weather',
+        ['latitude', 'longitude', 'label', 'unit'],
+        ['latitude', 'longitude', 'label'],
+      );
       const num = (x: unknown, where: string, lim: number): number => {
         if (typeof x !== 'number' || !Number.isFinite(x) || Math.abs(x) > lim)
           v.err(where, `must be a number within ±${lim}`);
@@ -396,6 +401,8 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
         longitude: num(w.longitude, 'dashboard.weather.longitude', 180),
         label: v.str(w.label, 'dashboard.weather.label'),
       };
+      if (w.unit !== undefined)
+        dashboard.weather.unit = v.oneOf(w.unit, 'dashboard.weather.unit', ['celsius', 'fahrenheit'] as const);
     }
   }
 
