@@ -78,7 +78,8 @@ interface Client {
 
 export function readClient(file: string): Client {
   const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
-  const c = (raw.installed as Record<string, unknown> | undefined) ?? raw;
+  const c =
+    (raw.web as Record<string, unknown> | undefined) ?? (raw.installed as Record<string, unknown> | undefined) ?? raw;
   if (typeof c.client_id !== 'string' || typeof c.client_secret !== 'string') {
     throw new Error(`no OAuth client in ${file}`);
   }
