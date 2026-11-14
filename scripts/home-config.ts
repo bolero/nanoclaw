@@ -72,6 +72,18 @@ export interface HomeConfig {
     stale_days: number;
     nudge_cap: number;
   };
+  /** Optional: the app's Today/Ops boards (scripts/dashboard-feed.ts). */
+  dashboard?: DashboardConfig;
+}
+
+export interface DashboardConfig {
+  /** App user handles (`app:<handle>`) allowed to see each board. */
+  audience: { today: string[]; ops: string[] };
+  /** Calendar ids (from `calendars`) shown on Today. */
+  today_calendars: string[];
+  /** Gatus base URL for service health on Ops. */
+  gatus_url?: string;
+  weather?: { latitude: number; longitude: number; label: string };
 }
 
 export const DEFAULT_HOME_CONFIG_PATH = path.join(os.homedir(), '.config', 'nanoclaw', 'home.yaml');
@@ -151,19 +163,37 @@ class V {
 
 export function validateHomeConfig(raw: unknown): HomeConfig {
   const v = new V();
-  const top = v.obj(raw, 'config', [
-    'version',
-    'agents',
-    'google_accounts',
-    'mailboxes',
-    'calendars',
-    'reminders',
-    'omnifocus',
-    'notes',
-    'destinations',
-    'personal_watch',
-    'schedule',
-  ]);
+  const top = v.obj(
+    raw,
+    'config',
+    [
+      'version',
+      'agents',
+      'google_accounts',
+      'mailboxes',
+      'calendars',
+      'reminders',
+      'omnifocus',
+      'notes',
+      'destinations',
+      'personal_watch',
+      'schedule',
+      'dashboard',
+    ],
+    [
+      'version',
+      'agents',
+      'google_accounts',
+      'mailboxes',
+      'calendars',
+      'reminders',
+      'omnifocus',
+      'notes',
+      'destinations',
+      'personal_watch',
+      'schedule',
+    ],
+  );
   if (top.version !== 1) v.err('version', 'must be 1');
 
   const agents = v.strs(top.agents, 'agents', ID);
@@ -330,6 +360,45 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
     nudge_cap: v.int(sc.nudge_cap, 'schedule.nudge_cap', 1, 20),
   };
 
+  let dashboard: DashboardConfig | undefined;
+  if (top.dashboard !== undefined) {
+    const d = v.obj(
+      top.dashboard,
+      'dashboard',
+      ['audience', 'today_calendars', 'gatus_url', 'weather'],
+      ['audience', 'today_calendars'],
+    );
+    const au = v.obj(d.audience, 'dashboard.audience', ['today', 'ops']);
+    const HANDLE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+    const today_calendars = v.strs(d.today_calendars, 'dashboard.today_calendars');
+    today_calendars.forEach((c, i) => {
+      if (c && !calIds.has(c)) v.err(`dashboard.today_calendars[${i}]`, `unknown calendar "${c}"`);
+    });
+    dashboard = {
+      audience: {
+        today: v.strs(au.today, 'dashboard.audience.today', HANDLE),
+        ops: v.strs(au.ops, 'dashboard.audience.ops', HANDLE),
+      },
+      today_calendars,
+    };
+    if (d.gatus_url !== undefined) {
+      dashboard.gatus_url = v.str(d.gatus_url, 'dashboard.gatus_url', /^https?:\/\/[^\s]+$/).replace(/\/+$/, '');
+    }
+    if (d.weather !== undefined) {
+      const w = v.obj(d.weather, 'dashboard.weather', ['latitude', 'longitude', 'label']);
+      const num = (x: unknown, where: string, lim: number): number => {
+        if (typeof x !== 'number' || !Number.isFinite(x) || Math.abs(x) > lim)
+          v.err(where, `must be a number within ±${lim}`);
+        return x as number;
+      };
+      dashboard.weather = {
+        latitude: num(w.latitude, 'dashboard.weather.latitude', 90),
+        longitude: num(w.longitude, 'dashboard.weather.longitude', 180),
+        label: v.str(w.label, 'dashboard.weather.label'),
+      };
+    }
+  }
+
   if (v.problems.length) throw new HomeConfigError(v.problems);
   return {
     version: 1,
@@ -343,6 +412,7 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
     destinations,
     personal_watch,
     schedule,
+    ...(dashboard ? { dashboard } : {}),
   };
 }
 

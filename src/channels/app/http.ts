@@ -17,6 +17,7 @@
  *   GET  /v1/events                       SSE: message | typing events; honours Last-Event-ID / ?after=
  *   GET  /v1/files/:id                    raw bytes
  *   GET  /v1/agents/:folder/avatar        image bytes (404 when none set)
+ *   GET  /v1/dashboard                    → { generatedAt, timezone, boards } (only boards whose audience includes you)
  *   PUT  /v1/devices/me/push              { apnsToken | null, environment: development|production }
  *
  * Conversation ids are the channel's platform ids (see ./ids.ts) and are
@@ -59,6 +60,8 @@ export interface AppApiDeps {
     clientId: string | null,
   ): Promise<AppMessage>;
   answerCard(device: Device, message: AppMessage, value: string): Promise<AppMessage>;
+  /** Dashboard boards this user may see (null = no dashboard configured). */
+  dashboard(userHandle: string): unknown;
 }
 
 export const MAX_BODY_BYTES = 30 * 1024 * 1024;
@@ -233,6 +236,12 @@ export function createAppHttpServer(deps: AppApiDeps, hub: EventHub): http.Serve
       if (message.card.resolution) throw new HttpError(409, 'already answered');
       if (!message.card.options.some((o) => o.value === value)) throw new HttpError(400, 'unknown option');
       return json(res, 200, { message: await deps.answerCard(device, message, value) });
+    }
+
+    if (method === 'GET' && route[0] === 'dashboard' && route.length === 1) {
+      const board = deps.dashboard(handle);
+      if (!board) throw new HttpError(404, 'no dashboard');
+      return json(res, 200, board);
     }
 
     if (method === 'GET' && route[0] === 'events' && route.length === 1) {

@@ -239,6 +239,30 @@ describe('app channel', () => {
     expect(store.getMessage(id!)!.card!.resolution).toBe('Rejected');
   });
 
+  it('serves only the dashboard boards whose audience includes the caller', async () => {
+    expect((await api(alex, 'GET', '/v1/dashboard')).status).toBe(404);
+    fs.writeFileSync(
+      path.join(dir, 'dashboard.json'),
+      JSON.stringify({
+        version: 1,
+        generatedAt: '2026-11-13T12:00:00Z',
+        timezone: 'UTC',
+        boards: [
+          { id: 'today', title: 'Today', audience: ['alex'], sections: [] },
+          { id: 'ops', title: 'Ops', audience: ['someone-else'], sections: [] },
+        ],
+      }),
+    );
+    const res = await api(alex, 'GET', '/v1/dashboard');
+    expect(res.json).toEqual({
+      version: 1,
+      generatedAt: '2026-11-13T12:00:00Z',
+      timezone: 'UTC',
+      boards: [{ id: 'today', title: 'Today', sections: [] }],
+    });
+    expect((await api(bob, 'GET', '/v1/dashboard')).json.boards).toEqual([]);
+  });
+
   it('rejects revoked and unknown tokens', async () => {
     expect((await api('nope', 'GET', '/v1/me')).status).toBe(401);
     const device = store.listDevices('bob')[0]!;

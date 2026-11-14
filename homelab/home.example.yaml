@@ -89,3 +89,12 @@ schedule:
   brief_time: "19:00"
   stale_days: 21
   nudge_cap: 3
+
+# Optional: the app's Today and Ops boards (scripts/dashboard-feed.ts). Handles are app users (app:<handle>).
+dashboard:
+  audience:
+    today: [alex]
+    ops: [alex]
+  today_calendars: [personal, family]
+  gatus_url: https://status.example.com
+  weather: {latitude: 52.37, longitude: 4.90, label: Home}

@@ -58,6 +58,7 @@ All routes are under `/v1`; everything except `health` and `pair` needs `Authori
 | `GET /events` | SSE: `message` (id = rev) and `typing` events; resumes from `Last-Event-ID` |
 | `GET /files/:id` | attachment bytes |
 | `GET /agents/:folder/avatar` | avatar image |
+| `GET /dashboard` | `{generatedAt, timezone, boards}`: boards from the collector file (`APP_DASHBOARD_FILE`, default `data/app-channel/dashboard.json`) whose `audience` lists the caller's handle; 404 when there is none |
 | `PUT /devices/me/push` `{apnsToken, environment}` | register for push; `environment` is `development` (direct installs) or `production` (TestFlight) |
 
 Message: `{id, rev, conversationId, direction: in|out, kind: text|card, text (Markdown), card?: {questionId, title, question, options[{label, value, style?}], resolution?}, files[{id, filename, mimeType, size}], senderName, failure, createdAt, updatedAt}`.

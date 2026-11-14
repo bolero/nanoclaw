@@ -21,6 +21,7 @@
  *
  * See src/channels/app/http.ts for the API, docs/app-channel.md for setup.
  */
+import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
@@ -75,6 +76,7 @@ const ENV_KEYS = [
   'APP_APNS_TOPIC',
   'APP_PUSH_QUIET_HOURS',
   'APP_PUSH_URGENT_AGENTS',
+  'APP_DASHBOARD_FILE',
 ];
 
 export interface AppChannelConfig {
@@ -83,6 +85,8 @@ export interface AppChannelConfig {
   publicUrl: string | null;
   /** Push is on only when the APNs key file, key id, team id and topic are all set. */
   push?: PushConfig | null;
+  /** JSON written by a dashboard collector (default: <store>/dashboard.json). */
+  dashboardFile?: string | null;
 }
 
 /** What delivery needs from APNs; ApnsClient in production, a stub in tests. */
@@ -129,6 +133,7 @@ export function readAppChannelConfig(): AppChannelConfig | null {
     host: get('APP_CHANNEL_HOST') || '127.0.0.1',
     publicUrl: (get('APP_CHANNEL_PUBLIC_URL') || '').replace(/\/+$/, '') || null,
     push,
+    dashboardFile: get('APP_DASHBOARD_FILE')?.replace(/^~(?=\/)/, os.homedir()) ?? null,
   };
 }
 
@@ -225,6 +230,33 @@ export function createAppAdapter(
     }
   }
 
+  let dashCache: {
+    mtimeMs: number;
+    data: { boards?: Array<{ audience?: unknown }> } & Record<string, unknown>;
+  } | null = null;
+
+  /** Boards from the collector's file whose audience lists this handle; audience itself is not sent. */
+  function dashboardFor(handle: string): unknown {
+    const file = config.dashboardFile ?? path.join(store.dir, 'dashboard.json');
+    // No file yet (collector not set up) = no dashboard.
+    const st = fs.statSync(file, { throwIfNoEntry: false });
+    if (!st) return null;
+    if (!dashCache || dashCache.mtimeMs !== st.mtimeMs) {
+      try {
+        dashCache = { mtimeMs: st.mtimeMs, data: JSON.parse(fs.readFileSync(file, 'utf8')) };
+        // eslint-disable-next-line no-catch-all/no-catch-all -- a bad file means "no dashboard", never a 500
+      } catch (err) {
+        log.warn('App dashboard file unreadable', { err });
+        return null;
+      }
+    }
+    const { boards, ...rest } = dashCache.data;
+    const visible = (Array.isArray(boards) ? boards : [])
+      .filter((b) => Array.isArray(b.audience) && (b.audience as unknown[]).includes(handle))
+      .map(({ audience: _audience, ...board }) => board);
+    return { ...rest, boards: visible };
+  }
+
   async function conversationExists(conversationId: string): Promise<boolean> {
     const mg = await getMessagingGroupByPlatform(APP_CHANNEL, conversationId);
     if (!mg) return false;
@@ -272,6 +304,7 @@ export function createAppAdapter(
 
   const deps: AppApiDeps = {
     store,
+    dashboard: dashboardFor,
     listConversations,
     conversationExists,
 

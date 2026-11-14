@@ -99,6 +99,11 @@ Give the mount only to a test group, never the group that reads outside messages
   restart the broker.
 - **Caller keys**: `scripts/bridge-policy.ts add-caller <agent> --onecli-agent <id> --host <bridge host>`
   (host-side MCP bridges) or `--target google` (broker). Keys go straight into OneCLI; only hashes are kept.
+- **App dashboard** (`scripts/dashboard-feed.ts`): fills the Bono app's Today and Ops boards from home.yaml
+  `dashboard` (audience per board = app handles, Today calendars, Gatus URL, optional weather location). Host-side
+  only: reads Google grants with read scopes, Gatus, `alerts.db` and `ncl tasks/approvals list`; writes
+  `data/app-channel/dashboard.json`, which the app channel serves per audience. Run `homelab/run-dashboard-feed.sh`
+  from a timer (systemd user `.service` with `Type=oneshot` + `.timer` with `OnUnitActiveSec=5min`).
 - **Agent tools** (`agent-tools/`): `nudges.ts` (Bun) — nudge record, numbered brief replies, auto-action
   ledger with undo. Copy into `groups/<folder>/tools/`. Tests: run `bun test` inside the agent image.
 
