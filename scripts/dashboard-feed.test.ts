@@ -12,7 +12,9 @@ import {
   CalendarReader,
   collectAlerts,
   collectServices,
+  collectScheduledTasks,
   collectTasks,
+  mcpCall,
   collectWeather,
   nwsCode,
   localDate,
@@ -170,6 +172,102 @@ describe('weather', () => {
   });
 });
 
+describe('tasks', () => {
+  /** Fake bridge: JSON for OmniFocus (stateless), SSE + session for Reminders (FastMCP style). */
+  const fetchFn = (async (url: string, init: RequestInit) => {
+    const body = JSON.parse(String(init.body)) as {
+      id?: number;
+      method: string;
+      params?: { name: string; arguments: Record<string, unknown> };
+    };
+    const headers = init.headers as Record<string, string>;
+    expect(headers['x-caller-key']).toBe('dash');
+    if (String(url).includes('omnifocus')) {
+      if (body.method === 'initialize') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }));
+      const overdue = body.params!.arguments.overdue === true;
+      const tasks = overdue
+        ? [{ id: 't1', name: 'File taxes', dueDate: '2026-11-10T17:00:00Z', projectName: 'Admin' }]
+        : [{ id: 't2', name: 'Call dentist', dueDate: '2026-11-13T18:00:00Z', projectName: null }];
+      return new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 2,
+          result: { content: [{ type: 'text', text: 'x' }], structuredContent: { tasks } },
+        }),
+      );
+    }
+    if (body.method === 'initialize')
+      return new Response('event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{}}\n\n', {
+        headers: { 'content-type': 'text/event-stream', 'mcp-session-id': 's1' },
+      });
+    if (body.method === 'notifications/initialized') return new Response(null, { status: 202 });
+    expect(headers['mcp-session-id']).toBe('s1');
+    const items = [
+      { eventKitId: 'r1', title: 'Milk', list: 'Family', dueDate: '2026-11-13' },
+      { eventKitId: 'r2', title: 'Private thing', list: 'Personal', dueDate: '2026-11-13' },
+    ];
+    const res = {
+      jsonrpc: '2.0',
+      id: 2,
+      result: {
+        content: [{ type: 'text', text: JSON.stringify({ items }) }],
+        structuredContent: { result: { items } },
+      },
+    };
+    return new Response(`event: message\ndata: ${JSON.stringify(res)}\n\n`, {
+      headers: { 'content-type': 'text/event-stream' },
+    });
+  }) as unknown as typeof fetch;
+  const bridges = { key: 'dash', remindersUrl: 'https://mac/mcp', omnifocusUrl: 'https://mac:8445/omnifocus/mcp' };
+  const names = new Map([['family', 'Family']]);
+
+  it('lists overdue first, then due today, from OmniFocus and only the allowed Reminders lists', async () => {
+    const s = await collectTasks(
+      { omnifocus: true, reminders: ['family'] },
+      names,
+      bridges,
+      'UTC',
+      new Date('2026-11-13T12:00:00Z'),
+      fetchFn,
+    );
+    expect(s).toMatchObject({
+      summary: '2 due today, 1 overdue',
+      rows: [
+        { title: 'File taxes', status: 'bad', detail: 'OmniFocus · Admin · overdue' },
+        { title: 'Milk', status: 'warn', detail: 'Reminders · Family · today' },
+        { title: 'Call dentist', status: 'warn', detail: 'OmniFocus · today 18:00' },
+      ],
+    });
+  });
+
+  it('shows every list for "all", and explains a missing key', async () => {
+    const s = await collectTasks(
+      { omnifocus: false, reminders: 'all' },
+      names,
+      bridges,
+      'UTC',
+      new Date('2026-11-13T12:00:00Z'),
+      fetchFn,
+    );
+    expect((s as { rows: Array<{ title: string }> }).rows.map((r) => r.title)).toEqual(['Milk', 'Private thing']);
+    expect((await collectTasks({ omnifocus: true, reminders: 'all' }, names, null, 'UTC')).error).toMatch(
+      /add-dashboard-key/,
+    );
+  });
+
+  it('surfaces tool errors', async () => {
+    const bad = (async () =>
+      new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: { isError: true, content: [{ type: 'text', text: 'This caller is read-only' }] },
+        }),
+      )) as unknown as typeof fetch;
+    await expect(mcpCall('https://x/mcp', 'k', 'edit_item', {}, bad)).rejects.toThrow(/read-only/);
+  });
+});
+
 describe('Ops', () => {
   it('lists only failing services with an up count', async () => {
     const fetchFn = (async () =>
@@ -233,7 +331,7 @@ describe('Ops', () => {
             },
             { agent_group_id: 'g1', prompt: 'Old one.', status: 'cancelled' },
           ];
-    const s = await collectTasks(ncl, 'UTC');
+    const s = await collectScheduledTasks(ncl, 'UTC');
     expect(s).toMatchObject({ summary: '1 scheduled', rows: [{ title: 'argus · Nightly check', status: 'warn' }] });
     expect((s as { rows: Array<{ detail: string }> }).rows[0]!.detail).toContain('2 failed');
   });

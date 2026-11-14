@@ -23,4 +23,15 @@ describe('bridge policy', () => {
     expect(() => buildPolicy(cfg, { bono: 'abc' })).toThrow(/malformed/);
     expect(() => buildPolicy(cfg, { bono: sha256('x'), family: sha256('x') })).toThrow(/share a key/);
   });
+
+  it('gives the dashboard read-only access to exactly what Today shows', () => {
+    const p = buildPolicy(cfg, { bono: sha256('k1'), dashboard: sha256('k3') });
+    expect(p.callers[sha256('k3')]).toBe('dashboard');
+    expect(p.reminders.dashboard).toEqual(['Family']);
+    expect(p.omnifocus).toEqual(['bono', 'dashboard']);
+    expect(p.readonly).toEqual(['dashboard']);
+    expect(buildPolicy(cfg, { bono: sha256('k1') }).readonly).toBeUndefined();
+    const noTasks = { ...cfg, dashboard: { ...cfg.dashboard!, tasks: undefined } };
+    expect(() => buildPolicy(noTasks, { dashboard: sha256('k3') })).toThrow(/not an agent/);
+  });
 });

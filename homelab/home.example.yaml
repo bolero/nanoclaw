@@ -97,4 +97,11 @@ dashboard:
     ops: [alex]
   today_calendars: [personal, family]
   gatus_url: https://status.example.com
+  # Tasks on each person's Today, read through the bridges with a read-only key
+  # (pnpm exec tsx scripts/bridge-policy.ts add-dashboard-key). reminders: all | [list ids]
+  tasks:
+    alex: {omnifocus: true, reminders: [family]}
+  task_bridges:
+    reminders_url: https://bridge-host.example.ts.net/mcp
+    omnifocus_url: https://bridge-host.example.ts.net:8445/mcp
   weather: {latitude: 52.37, longitude: 4.90, label: Home, unit: celsius}   # unit: celsius | fahrenheit; provider: open-meteo (default) | nws (US only)

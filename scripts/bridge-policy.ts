@@ -11,6 +11,8 @@
  *   pnpm exec tsx scripts/bridge-policy.ts add-caller <agent> --onecli-agent <id> --host <bridge host>
  *   pnpm exec tsx scripts/bridge-policy.ts add-caller <agent> --onecli-agent <id> --target google
  *       (Google broker key: host host.docker.internal, path /google/mcp, file google-callers.json)
+ *   pnpm exec tsx scripts/bridge-policy.ts add-dashboard-key
+ *       (read-only key for scripts/dashboard-feed.ts, from home.yaml dashboard.tasks; file dashboard-bridge.key)
  *   pnpm exec tsx scripts/bridge-policy.ts show
  *
  * Files (0600): ~/.config/nanoclaw/bridge-callers.json, ~/.config/nanoclaw/bridge-policy.json
@@ -44,14 +46,22 @@ export interface BridgePolicy {
   notes_read_all: string[];
   /** agents allowed to use OmniFocus */
   omnifocus: string[];
+  /** callers that may read but never write (the app dashboard) */
+  readonly?: string[];
 }
+
+/** The app dashboard's bridge identity: read-only, created with `add-dashboard-key`. */
+export const DASHBOARD_CALLER = 'dashboard';
+export const DASHBOARD_KEY_FILE = path.join(DIR, 'dashboard-bridge.key');
 
 export const sha256 = (s: string): string => crypto.createHash('sha256').update(s).digest('hex');
 
 export function buildPolicy(cfg: HomeConfig, callers: Callers, now = new Date()): BridgePolicy {
   const byHash: Record<string, string> = {};
+  const dashboardTasks = cfg.dashboard?.tasks ?? {};
   for (const [agent, hash] of Object.entries(callers)) {
-    if (!cfg.agents.includes(agent)) throw new Error(`caller "${agent}" is not an agent in home.yaml`);
+    const isDashboard = agent === DASHBOARD_CALLER && Object.keys(dashboardTasks).length > 0;
+    if (!isDashboard && !cfg.agents.includes(agent)) throw new Error(`caller "${agent}" is not an agent in home.yaml`);
     if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error(`caller "${agent}" has a malformed key hash`);
     if (byHash[hash]) throw new Error(`callers "${byHash[hash]}" and "${agent}" share a key`);
     byHash[hash] = agent;
@@ -64,6 +74,21 @@ export function buildPolicy(cfg: HomeConfig, callers: Callers, now = new Date())
     const nf = noteFoldersFor(cfg, a);
     if (nf === null || nf.length || cfg.notes.read_all.includes(a)) notes[a] = nf;
   }
+  const omnifocus = cfg.agents.filter((a) => accessFor(cfg.omnifocus.used_by, a) !== 'none');
+  const readonly: string[] = [];
+  if (callers[DASHBOARD_CALLER] && Object.keys(dashboardTasks).length > 0) {
+    // The dashboard reads exactly the union of what the configured people's Today boards show.
+    const wants = Object.values(dashboardTasks);
+    const names = new Set<string>();
+    let all = false;
+    for (const t of wants) {
+      if (t.reminders === 'all') all = true;
+      else for (const id of t.reminders) names.add(cfg.reminders.lists.find((l) => l.id === id)!.name);
+    }
+    if (all || names.size) reminders[DASHBOARD_CALLER] = all ? null : [...names].sort();
+    if (wants.some((t) => t.omnifocus)) omnifocus.push(DASHBOARD_CALLER);
+    readonly.push(DASHBOARD_CALLER);
+  }
   return {
     version: 1,
     generated_at: now.toISOString(),
@@ -71,7 +96,8 @@ export function buildPolicy(cfg: HomeConfig, callers: Callers, now = new Date())
     reminders,
     notes,
     notes_read_all: cfg.agents.filter((a) => cfg.notes.read_all.includes(a)),
-    omnifocus: cfg.agents.filter((a) => accessFor(cfg.omnifocus.used_by, a) !== 'none'),
+    omnifocus,
+    ...(readonly.length ? { readonly } : {}),
   };
 }
 
@@ -139,6 +165,23 @@ function addCaller(agent: string, onecliAgent: string, host: string, target: 'br
   console.log(`${target} caller key for ${agent} created and attached to OneCLI agent ${onecliAgent}`);
 }
 
+/** Key for the dashboard collector: kept host-side in a 0600 file (no OneCLI: no agent ever holds it). */
+function addDashboardKey(): void {
+  const cfg = loadHomeConfig();
+  if (!Object.keys(cfg.dashboard?.tasks ?? {}).length) throw new Error('home.yaml dashboard.tasks is empty');
+  const callers = readCallers();
+  if (callers[DASHBOARD_CALLER]) throw new Error(`dashboard already has a key; remove it from ${CALLERS_FILE} first`);
+  const key = crypto.randomBytes(32).toString('base64url');
+  fs.mkdirSync(path.dirname(DASHBOARD_KEY_FILE), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(DASHBOARD_KEY_FILE, key, { mode: 0o600, flag: 'wx' });
+  callers[DASHBOARD_CALLER] = sha256(key);
+  writePrivate(CALLERS_FILE, callers);
+  build();
+  console.log(
+    `dashboard key written to ${DASHBOARD_KEY_FILE}; policy rebuilt (copy ${POLICY_FILE} to the bridge host)`,
+  );
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
   const [cmd, ...rest] = process.argv.slice(2);
   const flag = (n: string): string => {
@@ -154,6 +197,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
       const target = rest.includes('--target') ? flag('--target') : 'bridges';
       if (target !== 'bridges' && target !== 'google') throw new Error('--target must be bridges or google');
       addCaller(rest[0], flag('--onecli-agent'), target === 'google' ? 'host.docker.internal' : flag('--host'), target);
+    } else if (cmd === 'add-dashboard-key') {
+      addDashboardKey();
     } else if (cmd === 'show') {
       const p = JSON.parse(fs.readFileSync(POLICY_FILE, 'utf8')) as BridgePolicy;
       console.log(

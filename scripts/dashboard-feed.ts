@@ -356,6 +356,188 @@ export async function collectEvents(
   return { ...section, days: bucketEvents(all, today, tz), ...(errors.length ? { error: errors.join('; ') } : {}) };
 }
 
+// ---- Tasks (per person, read-only through the bridges) -----------------------------------
+
+/**
+ * Minimal MCP client for one tool call over Streamable HTTP: initialize (keeping a session id when
+ * the server issues one), then tools/call. Accepts JSON or SSE responses. Returns structuredContent,
+ * else the first text block parsed as JSON.
+ */
+export async function mcpCall(
+  url: string,
+  key: string,
+  tool: string,
+  args: Record<string, unknown>,
+  fetchFn: typeof fetch = fetch,
+): Promise<unknown> {
+  let session: string | null = null;
+  const post = async (body: object): Promise<{ res: Response; msg: Record<string, unknown> | null }> => {
+    const res = await fetchFn(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        'x-caller-key': key,
+        ...(session ? { 'mcp-session-id': session } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (res.status === 202 || res.status === 204) return { res, msg: null };
+    const text = await res.text();
+    if (!res.ok) throw new Error(`${tool}: bridge ${res.status}${text ? ` ${text.slice(0, 120)}` : ''}`);
+    const payloads = (res.headers.get('content-type') ?? '').includes('text/event-stream')
+      ? text
+          .split('\n')
+          .filter((l) => l.startsWith('data:'))
+          .map((l) => l.slice(5).trim())
+      : [text];
+    const msgs = payloads.filter(Boolean).map((p) => JSON.parse(p) as Record<string, unknown>);
+    return { res, msg: msgs.find((m) => 'id' in m) ?? msgs[msgs.length - 1] ?? null };
+  };
+  const init = await post({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: {
+      protocolVersion: '2025-06-18',
+      capabilities: {},
+      clientInfo: { name: 'nanoclaw-dashboard', version: '1' },
+    },
+  });
+  session = init.res.headers.get('mcp-session-id');
+  if (session) await post({ jsonrpc: '2.0', method: 'notifications/initialized' });
+  const { msg } = await post({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: tool, arguments: args } });
+  if (!msg) throw new Error(`${tool}: empty response`);
+  if (msg.error) throw new Error(`${tool}: ${(msg.error as { message?: string }).message ?? 'error'}`);
+  const result = msg.result as {
+    structuredContent?: unknown;
+    content?: Array<{ type: string; text?: string }>;
+    isError?: boolean;
+  };
+  const text = result.content?.find((c) => c.type === 'text')?.text ?? '';
+  if (result.isError) throw new Error(`${tool}: ${text.slice(0, 160)}`);
+  if (result.structuredContent !== undefined) {
+    const sc = result.structuredContent as Record<string, unknown>;
+    // FastMCP wraps non-object returns as {result: …}.
+    return Object.keys(sc).length === 1 && 'result' in sc ? sc.result : sc;
+  }
+  return JSON.parse(text);
+}
+
+export interface TaskBridges {
+  key: string;
+  remindersUrl?: string;
+  omnifocusUrl?: string;
+}
+
+/** Due-date label and urgency relative to today (install timezone). */
+function dueRow(due: string | null | undefined, today: string, tz: string): { status: RowStatus; when: string } {
+  if (!due) return { status: 'info', when: '' };
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(due) ? due : localDate(new Date(due), tz);
+  if (day < today) return { status: 'bad', when: 'overdue' };
+  if (day === today) {
+    const timed = !/^\d{4}-\d{2}-\d{2}$/.test(due);
+    const t = timed
+      ? new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit' }).format(new Date(due))
+      : '';
+    return { status: 'warn', when: t ? `today ${t}` : 'today' };
+  }
+  return { status: 'info', when: day };
+}
+
+export async function collectTasks(
+  want: { omnifocus: boolean; reminders: 'all' | string[] },
+  listNames: Map<string, string>,
+  bridges: TaskBridges | null,
+  tz: string,
+  now = new Date(),
+  fetchFn: typeof fetch = fetch,
+): Promise<Section> {
+  const section: Section = { id: 'tasks', kind: 'rows', title: 'Due and overdue' };
+  if (!bridges) return { ...section, error: 'no dashboard bridge key (run bridge-policy.ts add-dashboard-key)' };
+  const today = localDate(now, tz);
+  const rows: Array<Row & { sort: string }> = [];
+  const errors: string[] = [];
+
+  if (want.omnifocus && bridges.omnifocusUrl) {
+    try {
+      const seen = new Set<string>();
+      for (const filter of [{ overdue: true }, { dueToday: true }]) {
+        const r = (await mcpCall(
+          bridges.omnifocusUrl,
+          bridges.key,
+          'filter_tasks',
+          { ...filter, limit: 25 },
+          fetchFn,
+        )) as {
+          tasks?: Array<{ id: string; name: string; dueDate?: string | null; projectName?: string | null }>;
+        };
+        for (const t of r.tasks ?? []) {
+          if (seen.has(t.id)) continue;
+          seen.add(t.id);
+          const d = dueRow(t.dueDate, today, tz);
+          rows.push({
+            title: t.name,
+            detail: ['OmniFocus', t.projectName, d.when].filter(Boolean).join(' · '),
+            status: d.status,
+            time: t.dueDate ?? undefined,
+            sort: t.dueDate ?? '9',
+          });
+        }
+      }
+    } catch (e) {
+      errors.push(`OmniFocus: ${(e as Error).message.split('\n')[0]}`);
+    }
+  }
+
+  const listFilter = want.reminders === 'all' ? null : new Set(want.reminders.map((id) => listNames.get(id) ?? id));
+  if ((want.reminders === 'all' || want.reminders.length) && bridges.remindersUrl) {
+    try {
+      const r = (await mcpCall(
+        bridges.remindersUrl,
+        bridges.key,
+        'reminders_today',
+        { include_overdue: true },
+        fetchFn,
+      )) as {
+        items?: Array<{
+          eventKitId?: string;
+          title: string;
+          list?: string;
+          dueDate?: string;
+          due?: string;
+          completed?: boolean;
+        }>;
+      };
+      for (const it of r.items ?? []) {
+        if (it.completed) continue;
+        if (listFilter && !listFilter.has(it.list ?? '')) continue;
+        const due = it.dueDate ?? it.due;
+        const d = dueRow(due, today, tz);
+        rows.push({
+          title: it.title,
+          detail: ['Reminders', it.list, d.when].filter(Boolean).join(' · '),
+          status: d.status,
+          time: due,
+          sort: due ?? '9',
+        });
+      }
+    } catch (e) {
+      errors.push(`Reminders: ${(e as Error).message.split('\n')[0]}`);
+    }
+  }
+
+  rows.sort((a, b) => (a.status === b.status ? a.sort.localeCompare(b.sort) : a.status === 'bad' ? -1 : 1));
+  const overdue = rows.filter((r) => r.status === 'bad').length;
+  return {
+    ...section,
+    summary: rows.length ? `${rows.length - overdue} due today${overdue ? `, ${overdue} overdue` : ''}` : 'Nothing due',
+    rows: rows.slice(0, 30).map(({ sort: _sort, ...row }) => row),
+    ...(errors.length ? { error: errors.join('; ') } : {}),
+  };
+}
+
 // ---- Ops -----------------------------------------------------------------------------------
 
 interface GatusStatus {
@@ -468,7 +650,7 @@ export function taskTitle(prompt: string, seriesId?: string): string {
   return first.slice(0, 57) + '…';
 }
 
-export async function collectTasks(ncl: NclRunner, tz: string): Promise<Section> {
+export async function collectScheduledTasks(ncl: NclRunner, tz: string): Promise<Section> {
   const section: Section = { id: 'tasks', kind: 'rows', title: 'Scheduled tasks' };
   const [tasks, groups] = (await Promise.all([ncl(['tasks', 'list']), ncl(['groups', 'list'])])) as [
     Array<Record<string, unknown>>,
@@ -547,6 +729,7 @@ export async function buildDashboard(opts: {
   fetchFn?: typeof fetch;
   now?: Date;
   previous?: DashboardFile | null;
+  bridges?: TaskBridges | null;
 }): Promise<DashboardFile> {
   const d = opts.cfg.dashboard;
   if (!d) throw new Error('home.yaml has no dashboard section');
@@ -556,30 +739,58 @@ export async function buildDashboard(opts: {
     guard('events', 'Calendar', 'events', () => collectEvents(opts.cfg, opts.reader, opts.tz, opts.now)),
     guard('services', 'Services', 'rows', () => collectServices(d.gatus_url, fetchFn)),
     guard('approvals', 'Pending approvals', 'rows', () => collectApprovals(opts.ncl)),
-    guard('tasks', 'Scheduled tasks', 'rows', () => collectTasks(opts.ncl, opts.tz)),
+    guard('tasks', 'Scheduled tasks', 'rows', () => collectScheduledTasks(opts.ncl, opts.tz)),
   ]);
   const alerts = await guard('alerts', 'Alerts, last 24 h', 'rows', () => collectAlerts(opts.alertsDb, opts.now));
-  const prev = (board: string, id: string) =>
-    opts.previous?.boards.find((b) => b.id === board)?.sections.find((s) => s.id === id);
-  const keep = (board: string, s: Section) => carryOver(s, prev(board, s.id), opts.previous?.generatedAt);
+  const listNames = new Map(opts.cfg.reminders.lists.map((l) => [l.id, l.name]));
+  // Today is per person: shared weather and calendar, plus that person's own tasks.
+  const todayBoards: Board[] = [];
+  const shared = d.audience.today.filter((h) => !d.tasks?.[h]);
+  if (shared.length) {
+    todayBoards.push({
+      id: 'today',
+      title: 'Today',
+      audience: shared,
+      sections: d.weather ? [weather, events] : [events],
+    });
+  }
+  for (const handle of d.audience.today.filter((h) => d.tasks?.[h])) {
+    const tasks = await guard('tasks', 'Due and overdue', 'rows', () =>
+      collectTasks(d.tasks![handle]!, listNames, opts.bridges ?? null, opts.tz, opts.now, fetchFn),
+    );
+    todayBoards.push({
+      id: 'today',
+      title: 'Today',
+      audience: [handle],
+      sections: d.weather ? [weather, tasks, events] : [tasks, events],
+    });
+  }
+  const prev = (board: Board, id: string) =>
+    opts.previous?.boards
+      .find((b) => b.id === board.id && b.audience.join(',') === board.audience.join(','))
+      ?.sections.find((s) => s.id === id);
+  const keep = (board: Board): Board => ({
+    ...board,
+    sections: board.sections.map((s) => carryOver(s, prev(board, s.id), opts.previous?.generatedAt)),
+  });
   return {
     version: 1,
     generatedAt: (opts.now ?? new Date()).toISOString(),
     timezone: opts.tz,
     boards: [
-      {
-        id: 'today',
-        title: 'Today',
-        audience: d.audience.today,
-        sections: (d.weather ? [weather, events] : [events]).map((s) => keep('today', s)),
-      },
-      {
-        id: 'ops',
-        title: 'Ops',
-        audience: d.audience.ops,
-        sections: [services, alerts, approvals, tasks].map((s) => keep('ops', s)),
-      },
+      ...todayBoards.map(keep),
+      keep({ id: 'ops', title: 'Ops', audience: d.audience.ops, sections: [services, alerts, approvals, tasks] }),
     ],
+  };
+}
+
+function readBridges(cfg: HomeConfig): TaskBridges | null {
+  const file = path.join(os.homedir(), '.config', 'nanoclaw', 'dashboard-bridge.key');
+  if (!fs.existsSync(file)) return null;
+  return {
+    key: fs.readFileSync(file, 'utf8').trim(),
+    remindersUrl: cfg.dashboard?.task_bridges?.reminders_url,
+    omnifocusUrl: cfg.dashboard?.task_bridges?.omnifocus_url,
   };
 }
 
@@ -613,6 +824,7 @@ async function main(): Promise<void> {
     ncl: nclRunner(root),
     alertsDb: process.env.ALERTS_DB ?? path.join(os.homedir(), 'nanoclaw-alerts', 'alerts.db'),
     previous: readPrevious(out),
+    bridges: readBridges(cfg),
   });
   const json = JSON.stringify(file, null, 2);
   if (args.includes('--print')) console.log(json);

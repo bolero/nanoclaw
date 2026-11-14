@@ -83,6 +83,10 @@ export interface DashboardConfig {
   today_calendars: string[];
   /** Gatus base URL for service health on Ops. */
   gatus_url?: string;
+  /** Per app handle: whose OmniFocus / Reminders tasks show on that person's Today (read-only). */
+  tasks?: Record<string, { omnifocus: boolean; reminders: 'all' | string[] }>;
+  /** MCP endpoints of the host-side bridges the dashboard reads tasks from. */
+  task_bridges?: { reminders_url?: string; omnifocus_url?: string };
   weather?: {
     latitude: number;
     longitude: number;
@@ -372,7 +376,7 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
     const d = v.obj(
       top.dashboard,
       'dashboard',
-      ['audience', 'today_calendars', 'gatus_url', 'weather'],
+      ['audience', 'today_calendars', 'gatus_url', 'weather', 'tasks', 'task_bridges'],
       ['audience', 'today_calendars'],
     );
     const au = v.obj(d.audience, 'dashboard.audience', ['today', 'ops']);
@@ -390,6 +394,39 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
     };
     if (d.gatus_url !== undefined) {
       dashboard.gatus_url = v.str(d.gatus_url, 'dashboard.gatus_url', /^https?:\/\/[^\s]+$/).replace(/\/+$/, '');
+    }
+    if (d.tasks !== undefined) {
+      const t = v.obj(d.tasks, 'dashboard.tasks', Object.keys((d.tasks as object) ?? {}), []);
+      const listIdsAll = listIds;
+      dashboard.tasks = {};
+      for (const [handle, raw] of Object.entries(t)) {
+        const w = `dashboard.tasks.${handle}`;
+        if (!HANDLE.test(handle)) v.err(w, 'invalid app handle');
+        const o = v.obj(raw, w, ['omnifocus', 'reminders'], []);
+        if (o.omnifocus !== undefined && typeof o.omnifocus !== 'boolean')
+          v.err(`${w}.omnifocus`, 'must be true or false');
+        let reminders: 'all' | string[] = [];
+        if (o.reminders === 'all') reminders = 'all';
+        else if (o.reminders !== undefined) {
+          reminders = v.strs(o.reminders, `${w}.reminders`);
+          reminders.forEach((l, i) => {
+            if (l && !listIdsAll.has(l)) v.err(`${w}.reminders[${i}]`, `unknown reminders list "${l}"`);
+          });
+        }
+        dashboard.tasks[handle] = { omnifocus: o.omnifocus === true, reminders };
+      }
+    }
+    if (d.task_bridges !== undefined) {
+      const b = v.obj(d.task_bridges, 'dashboard.task_bridges', ['reminders_url', 'omnifocus_url'], []);
+      const URL_RE = /^https?:\/\/[^\s]+$/;
+      dashboard.task_bridges = {
+        ...(b.reminders_url !== undefined
+          ? { reminders_url: v.str(b.reminders_url, 'dashboard.task_bridges.reminders_url', URL_RE) }
+          : {}),
+        ...(b.omnifocus_url !== undefined
+          ? { omnifocus_url: v.str(b.omnifocus_url, 'dashboard.task_bridges.omnifocus_url', URL_RE) }
+          : {}),
+      };
     }
     if (d.weather !== undefined) {
       const w = v.obj(
