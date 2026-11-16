@@ -15,6 +15,7 @@
  *       Numbers the listed items 1..n for replies ("done 2") and marks them nudged now.
  *   bun nudges.ts reply <n> done|drop|stop|help|snooze <3d|1w|2026-12-01>   (stop = never suggest again)
  *       Resolves number n from the last brief, records the response, prints the item as JSON.
+ *   bun nudges.ts reply-key <source:id> done|drop|stop|help|next|snooze [1d|1w|YYYY-MM-DD]   (app item buttons)
  *   bun nudges.ts action add <source> <id> <title>       -> prints the undo number N
  *   bun nudges.ts action undo <N>                          -> prints the action as JSON, marks it undone
  *   bun nudges.ts stats [--days 14]
@@ -200,6 +201,19 @@ export function reply(db: Database, n: number, verb: string, arg: string | undef
   return { n, verb, snooze_until: snooze, source: row.source, id: row.item_id, title: row.title };
 }
 
+/** Like reply, but by stable item key ("omnifocus:abc") instead of the last brief's number. */
+export function replyKey(db: Database, key: string, verb: string, arg: string | undefined, now = Date.now()) {
+  const row = db.prepare(`SELECT * FROM items WHERE key = ?1`).get(key) as Record<string, unknown> | null;
+  if (!row) throw new Error(`unknown item ${key}`);
+  if (!['done', 'drop', 'stop', 'help', 'snooze', 'next'].includes(verb))
+    throw new Error('verb must be done, drop, stop, help, next or snooze');
+  const snooze = verb === 'snooze' ? parseSnooze(arg ?? '1d', now) : null;
+  db.prepare(
+    `UPDATE items SET response = ?1, responded_at = ?2, snooze_until = COALESCE(?3, snooze_until) WHERE key = ?4`,
+  ).run(verb === 'next' ? 'help' : verb, new Date(now).toISOString(), snooze, key);
+  return { key, verb, snooze_until: snooze, source: row.source, id: row.item_id, title: row.title };
+}
+
 export function actionAdd(db: Database, source: string, id: string, title: string, now = Date.now()): number {
   const r = db
     .prepare(`INSERT INTO actions (at, source, item_id, title) VALUES (?1, ?2, ?3, ?4)`)
@@ -259,6 +273,8 @@ if (import.meta.main) {
     } else if (cmd === 'brief') {
       brief(db, rest);
       console.log(`numbered ${rest.length} item(s)`);
+    } else if (cmd === 'reply-key') {
+      console.log(JSON.stringify(replyKey(db, rest[0], rest[1], rest[2])));
     } else if (cmd === 'reply') {
       console.log(JSON.stringify(reply(db, Number(rest[0]), rest[1], rest[2])));
     } else if (cmd === 'action' && rest[0] === 'add') {
@@ -268,7 +284,7 @@ if (import.meta.main) {
     } else if (cmd === 'stats') {
       console.log(JSON.stringify(stats(db, flagNum(rest, '--days', 14)), null, 2));
     } else {
-      console.error('usage: nudges.ts filter|backlog|brief|reply|action add|action undo|stats (see header)');
+      console.error('usage: nudges.ts filter|backlog|brief|reply|reply-key|action add|action undo|stats (see header)');
       process.exit(2);
     }
   } catch (e) {

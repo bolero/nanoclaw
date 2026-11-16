@@ -11,4 +11,15 @@ Ordinary conversational replies need no tag. Use one tag at most, exactly in thi
 
 **After an accepted offer.** When you finish the work for an answered question, send the result in that same conversation tagged `<!-- kind: done -->` (or `<!-- kind: failed -->`). The app links it to the card and shows the card as completed or failed.
 
+**Per-item buttons.** When a message lists things the person can act on one by one (nudges, overdue tasks, brain-dump follow-ups), add one fenced block at the end, in exactly this form; the app removes it from the text and shows a row with buttons per item:
+
+```bono-actions
+[{"id": "omnifocus:<task id>", "title": "Sell camera", "detail": "OmniFocus · ToDo · overdue since Aug 19", "next": "I can draft a Marketplace listing with a price check", "actions": ["done", "snooze", "next", "drop", "stop"]}]
+```
+- `id`: stable and exact (the task's own id with its source, or your own key such as `dump:3`); letters, digits and `:_.-` only.
+- `actions`: any of `done`, `snooze`, `next` (do the next step you offered), `drop`, `stop` (never suggest again), `add`, `dismiss`. Offer only what makes sense.
+- `next`: one concrete thing you can do right now to move it forward. Keep `title`/`detail` short. At most 12 items.
+- Do not also print the same items as a numbered list, and do not add "Reply e.g." lines.
+When the person taps a button you receive `[item] <action> [snooze-length] <id> (<title>)`. Act on exactly that item, then reply briefly (tag `<!-- kind: done -->` or `<!-- kind: failed -->`).
+
 **Reply hints.** When you ask for a text reply, put the exact replies in single quotes on a final line starting with "Reply", e.g. `Reply 'done 1', 'snooze 2 1w' or 'undo 3'.` The app turns them into tap-to-send buttons on your latest message.

@@ -183,7 +183,11 @@ export function matchByName(payee: string, tasks: TaskRef[]): TaskRef | null {
   return tasks.find((t) => words.some((w) => norm(t.title).split(' ').includes(w))) ?? null;
 }
 
-export function suggestionText(r: Review, emailFrom: string): { text: string; reply: string } {
+export function suggestionText(
+  r: Review,
+  emailFrom: string,
+  messageId = 'x',
+): { text: string; reply: string; items: object[] } {
   const payee = (r.payee ?? emailFrom).slice(0, 18);
   const amount = r.amount ? ` ${r.amount}` : '';
   const due = r.due_date ? ` due ${r.due_date}` : '';
@@ -191,11 +195,20 @@ export function suggestionText(r: Review, emailFrom: string): { text: string; re
   const text = [
     `**New bill: ${payee}${amount}${r.due_date ? `, due ${r.due_date}` : ''}**`,
     `${r.summary}`,
-    `No open task for it in OmniFocus bills or Reminders. Reply '${reply}' to have bono add it, or ignore this.`,
+    'No open task for it in OmniFocus bills or Reminders.',
     '',
     '_Local mail review (trial): read and classified on the home network only._',
   ].join('\n');
-  return { text, reply };
+  const items = [
+    {
+      id: `bill:${messageId.replace(/[^A-Za-z0-9]/g, '').slice(0, 40)}`,
+      title: reply.replace(/^add bill /, ''),
+      detail: 'No open task in OmniFocus bills or Reminders',
+      next: 'Add a task for it to OmniFocus bills',
+      actions: ['add', 'dismiss'],
+    },
+  ];
+  return { text, reply, items };
 }
 
 // ---------- packages ----------
@@ -241,7 +254,7 @@ export interface Deps {
   classify(system: string, user: string): Promise<string>;
   pickTask(payee: string, tasks: TaskRef[]): Promise<string | null>;
   billTasks(): Promise<TaskRef[]>;
-  notify(text: string): Promise<void>;
+  notify(text: string, items?: object[]): Promise<void>;
   now(): Date;
   timezone: string;
 }
@@ -340,7 +353,8 @@ export async function runOnce(
           rec.bill = `covered by "${picked}"`;
         } else {
           rec.bill = 'no task: suggested';
-          if (!opts.dryRun) await deps.notify(suggestionText(review, mail.from).text);
+          const s = suggestionText(review, mail.from, m.id);
+          if (!opts.dryRun) await deps.notify(s.text, s.items);
         }
       } catch (e) {
         rec.bill = `could not check tasks: ${(e as Error).message}`;
@@ -529,11 +543,12 @@ async function main(): Promise<void> {
       }
       return out;
     },
-    async notify(text) {
+    async notify(text, items) {
       if (!handle) return;
       await promisify(execFile)(
         path.join(root, 'bin', 'ncl'),
         [
+          ...(items ? ['--items', JSON.stringify(items)] : []),
           'app',
           'notify',
           '--user',

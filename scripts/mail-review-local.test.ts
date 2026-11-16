@@ -62,12 +62,13 @@ describe('mail-review-local model contract', () => {
   });
 
   it('builds a self-contained suggestion reply', () => {
-    const { reply, text } = suggestionText(
+    const { reply, text, items } = suggestionText(
       { category: 'bill', summary: 'Statement ready', payee: 'PG&E', amount: '$123.45', due_date: '2026-12-03' },
       'PG&E',
     );
     expect(reply).toBe('add bill PG&E $123.45 due 2026-12-03');
-    expect(text).toContain(`Reply '${reply}'`);
+    expect(text).toContain('No open task');
+    expect(items[0]).toMatchObject({ actions: ['add', 'dismiss'], title: 'PG&E $123.45 due 2026-12-03' });
   });
 
   it('merges package updates by tracking number and expires old ones', () => {

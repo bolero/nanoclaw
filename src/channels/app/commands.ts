@@ -214,7 +214,7 @@ register({
 register({
   name: 'app-notify',
   description:
-    "Post a one-line notice from a host job into a person's Home chat in the app (with push). Agents never see it. Usage: ncl app notify --user <handle> --text <text> [--sender <name>] [--category notice|suggestion|brief|done|failed]",
+    "Post a one-line notice from a host job into a person's Home chat in the app (with push). Agents never see it. Usage: ncl app notify --user <handle> --text <text> [--sender <name>] [--category notice|suggestion|brief|done|failed] [--items '<json action items>']",
   access: 'open',
   hostOnly: true,
   resource: 'app',
@@ -225,25 +225,36 @@ register({
     const category = str(raw, 'category', false) ?? 'notice';
     if (!['notice', 'suggestion', 'brief', 'done', 'failed'].includes(category))
       throw new Error('--category must be notice, suggestion, brief, done or failed');
-    return { handle: handleArg(raw), text, sender, category };
+    const itemsRaw = str(raw, 'items', false);
+    let items: unknown = undefined;
+    if (itemsRaw) {
+      try {
+        items = JSON.parse(itemsRaw);
+      } catch {
+        throw new Error('--items must be a JSON array');
+      }
+    }
+    return { handle: handleArg(raw), text, sender, category, items };
   },
   handler: async ({
     handle,
     text,
     sender,
     category,
+    items,
   }: {
     handle: string;
     text: string;
     sender: string | null;
     category: string;
+    items?: unknown;
   }) => {
     const adapter = getChannelAdapter(CHANNEL);
     if (!adapter) throw new Error('the app channel is not running');
     const conversation = homeConversationId(handle);
     const id = await adapter.deliver(conversation, null, {
       kind: 'chat',
-      content: { text, category, ...(sender ? { sender } : {}) },
+      content: { text, category, ...(sender ? { sender } : {}), ...(items ? { items } : {}) },
     });
     if (!id) throw new Error('nothing was delivered');
     return { conversation, id };

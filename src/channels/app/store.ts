@@ -45,6 +45,23 @@ export interface CardData {
 
 export type CardStatus = 'working' | 'declined' | 'completed' | 'failed';
 
+/** Per-item actions on an agent message (briefs, suggestions): one row per item in the app. */
+export const ITEM_ACTIONS = ['done', 'snooze', 'next', 'drop', 'stop', 'add', 'dismiss'] as const;
+export type ItemAction = (typeof ITEM_ACTIONS)[number];
+export interface ActionItem {
+  /** Stable id the agent understands, e.g. "omnifocus:gg9DRW" or "bill:18c2f". */
+  id: string;
+  title: string;
+  detail?: string;
+  /** The concrete next step the agent offers ("I can draft the email"). */
+  next?: string;
+  actions: ItemAction[];
+  /** Set when the person acts: done, snoozed, dropped, stopped, sent (next/add), dismissed. */
+  state?: 'done' | 'snoozed' | 'dropped' | 'stopped' | 'sent' | 'dismissed';
+  stateLabel?: string;
+  stateAt?: string;
+}
+
 /** What an outgoing message is, for the app's Home: set by the agent's hidden kind tag or the sender. */
 export type MessageCategory = 'brief' | 'suggestion' | 'done' | 'failed' | 'notice';
 export const MESSAGE_CATEGORIES: readonly MessageCategory[] = ['brief', 'suggestion', 'done', 'failed', 'notice'];
@@ -69,6 +86,7 @@ export interface AppMessage {
   senderName: string | null;
   failure: boolean;
   category: MessageCategory | null;
+  items: ActionItem[] | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -105,6 +123,7 @@ interface MessageRow {
   sender_name: string | null;
   failure: number;
   category: string | null;
+  items_json: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -221,6 +240,7 @@ export class AppStore {
     if (!cols.some((c) => c.name === 'apns_env')) this.db.exec('ALTER TABLE devices ADD COLUMN apns_env TEXT');
     const mcols = this.db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>;
     if (!mcols.some((c) => c.name === 'category')) this.db.exec('ALTER TABLE messages ADD COLUMN category TEXT');
+    if (!mcols.some((c) => c.name === 'items_json')) this.db.exec('ALTER TABLE messages ADD COLUMN items_json TEXT');
   }
 
   close(): void {
@@ -369,9 +389,10 @@ export class AppStore {
   // ── Messages ──
 
   insertMessage(
-    msg: Omit<AppMessage, 'rev' | 'updatedAt' | 'createdAt' | 'category'> & {
+    msg: Omit<AppMessage, 'rev' | 'updatedAt' | 'createdAt' | 'category' | 'items'> & {
       createdAt?: string;
       category?: MessageCategory | null;
+      items?: ActionItem[] | null;
     },
   ): AppMessage {
     const createdAt = msg.createdAt ?? new Date().toISOString();
@@ -379,8 +400,8 @@ export class AppStore {
     this.db
       .prepare(
         `INSERT INTO messages (id, rev, conversation_id, user_handle, direction, kind, text, card_json,
-                               files_json, sender_name, failure, category, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                               files_json, sender_name, failure, category, items_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         msg.id,
@@ -395,6 +416,7 @@ export class AppStore {
         msg.senderName,
         msg.failure ? 1 : 0,
         msg.category ?? null,
+        msg.items?.length ? JSON.stringify(msg.items) : null,
         createdAt,
         createdAt,
       );
@@ -450,6 +472,25 @@ export class AppStore {
     return this.updateMessage(row.id, {
       card: { ...card, status: result.category === 'done' ? 'completed' : 'failed', resultMessageId: result.id },
     });
+  }
+
+  /** Record what the person did with one item; bumps rev so clients update. */
+  setItemState(
+    messageId: string,
+    itemId: string,
+    state: NonNullable<ActionItem['state']>,
+    label: string,
+  ): AppMessage | null {
+    const msg = this.getMessage(messageId);
+    if (!msg?.items) return null;
+    const items = msg.items.map((it) =>
+      it.id === itemId ? { ...it, state, stateLabel: label, stateAt: new Date().toISOString() } : it,
+    );
+    const rev = this.nextRev();
+    this.db
+      .prepare('UPDATE messages SET rev = ?, items_json = ?, updated_at = ? WHERE id = ?')
+      .run(rev, JSON.stringify(items), new Date().toISOString(), messageId);
+    return this.getMessage(messageId);
   }
 
   findCardByQuestion(questionId: string): AppMessage[] {
@@ -615,6 +656,7 @@ function toMessage(row: MessageRow): AppMessage {
     senderName: row.sender_name,
     failure: row.failure === 1,
     category: MESSAGE_CATEGORIES.includes(row.category as MessageCategory) ? (row.category as MessageCategory) : null,
+    items: row.items_json ? (JSON.parse(row.items_json) as ActionItem[]) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

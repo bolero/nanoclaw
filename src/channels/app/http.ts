@@ -29,7 +29,7 @@ import path from 'path';
 
 import { log } from '../../log.js';
 import { conversationOwner } from './ids.js';
-import type { AppMessage, AppStore, Device } from './store.js';
+import type { ActionItem, AppMessage, AppStore, Device, ItemAction } from './store.js';
 
 export interface ConversationSummary {
   id: string;
@@ -60,8 +60,16 @@ export interface AppApiDeps {
     text: string,
     attachments: UploadedAttachment[],
     clientId: string | null,
+    agentText?: string,
   ): Promise<AppMessage>;
   answerCard(device: Device, message: AppMessage, value: string): Promise<AppMessage>;
+  itemAction(
+    device: Device,
+    message: AppMessage,
+    item: ActionItem,
+    action: ItemAction,
+    arg: string | null,
+  ): Promise<AppMessage>;
   /** Dashboard boards this user may see (null = no dashboard configured). */
   dashboard(userHandle: string): unknown;
 }
@@ -238,6 +246,19 @@ export function createAppHttpServer(deps: AppApiDeps, hub: EventHub): http.Serve
       if (message.card.resolution) throw new HttpError(409, 'already answered');
       if (!message.card.options.some((o) => o.value === value)) throw new HttpError(400, 'unknown option');
       return json(res, 200, { message: await deps.answerCard(device, message, value) });
+    }
+
+    if (method === 'POST' && route[0] === 'items' && route.length === 1) {
+      const body = await readJson(req);
+      const message = deps.store.getMessage(typeof body.messageId === 'string' ? body.messageId : '');
+      if (!message || message.userHandle !== handle || !message.items) throw new HttpError(404, 'no such message');
+      const item = message.items.find((i) => i.id === body.itemId);
+      if (!item) throw new HttpError(404, 'no such item');
+      const action = body.action as ItemAction;
+      if (!item.actions.includes(action)) throw new HttpError(400, 'action not offered for this item');
+      if (item.state) throw new HttpError(409, 'already handled');
+      const arg = typeof body.arg === 'string' ? body.arg.slice(0, 20) : null;
+      return json(res, 200, { message: await deps.itemAction(device, message, item, action, arg) });
     }
 
     if (method === 'GET' && route[0] === 'dashboard' && route.length === 1) {

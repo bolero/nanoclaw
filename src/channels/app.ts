@@ -52,8 +52,11 @@ import {
   type PushConfig,
 } from './app/push.js';
 import {
+  ITEM_ACTIONS,
   MESSAGE_CATEGORIES,
   newId,
+  type ActionItem,
+  type ItemAction,
   type AppMessage,
   type AppStore,
   type CardData,
@@ -330,7 +333,7 @@ export function createAppAdapter(
       return (await getUser(`app:${handle}`))?.display_name ?? null;
     },
 
-    async sendInbound(device, conversationId, text, attachments, clientId) {
+    async sendInbound(device, conversationId, text, attachments, clientId, agentText) {
       if (!setupConfig) throw new Error('app channel not set up');
       const id = clientId ? `in_${device.id}_${clientId}` : newId('in');
       const existing = store.getMessage(id);
@@ -361,7 +364,7 @@ export function createAppAdapter(
         isMention: true,
         isGroup: false,
         content: {
-          text,
+          text: agentText ?? text,
           sender: senderName,
           senderId: `app:${device.userHandle}`,
           senderName,
@@ -379,6 +382,28 @@ export function createAppAdapter(
         },
       });
       return message;
+    },
+
+    async itemAction(device, message, item, action, arg) {
+      if (!setupConfig) throw new Error('app channel not set up');
+      const snooze = action === 'snooze' ? (arg && /^(\d{1,2}[dw]|\d{4}-\d{2}-\d{2})$/.test(arg) ? arg : '1d') : null;
+      const outcome: Record<ItemAction, [NonNullable<ActionItem['state']>, string]> = {
+        done: ['done', 'Done'],
+        snooze: ['snoozed', `Snoozed ${snooze ?? ''}`.trim()],
+        next: ['sent', 'Asked bono to do the next step'],
+        drop: ['dropped', 'Dropped'],
+        stop: ['stopped', "Won't suggest again"],
+        add: ['sent', 'Asked bono to add it'],
+        dismiss: ['dismissed', 'Dismissed'],
+      };
+      const [state, label] = outcome[action];
+      const updated = store.setItemState(message.id, item.id, state, label)!;
+      hub.publishMessage(updated);
+      // The person sees a short line; the agent gets the exact item id and verb.
+      const shown = `${label} · ${item.title}`.slice(0, 200);
+      const agentText = `[item] ${action}${snooze ? ` ${snooze}` : ''} ${item.id} (${item.title})`;
+      await this.sendInbound(device, message.conversationId, shown, [], null, agentText);
+      return updated;
     },
 
     async answerCard(device, message, value) {
@@ -489,7 +514,9 @@ export function createAppAdapter(
       const id = newId('out');
       let card: CardData | null = null;
       const tagged = extractCategory(outboundText(content));
-      let text = tagged.text;
+      const listed = extractItems(tagged.text);
+      let text = listed.text;
+      const items = listed.items ?? (Array.isArray(content.items) ? validateItems(content.items) : null);
       if (content.type === 'ask_question') {
         if (
           typeof content.questionId !== 'string' ||
@@ -523,6 +550,7 @@ export function createAppAdapter(
         files,
         senderName: typeof content.sender === 'string' ? content.sender : null,
         failure: content.failureNotice === true,
+        items,
         category:
           tagged.category ??
           (isCategory(content.category) ? content.category : content.failureNotice === true ? 'failed' : null),
@@ -562,6 +590,49 @@ export function extractCategory(text: string): { text: string; category: Message
 
 function isCategory(v: unknown): v is MessageCategory {
   return typeof v === 'string' && (MESSAGE_CATEGORIES as readonly string[]).includes(v);
+}
+
+const ITEM_ID = /^[A-Za-z0-9:_.\-]{1,120}$/;
+
+/** Validate an agent-supplied item list: at most 12 items, known actions, bounded text. */
+export function validateItems(raw: unknown): ActionItem[] | null {
+  if (!Array.isArray(raw)) return null;
+  const clip = (v: unknown, n: number) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, n) : undefined);
+  const out: ActionItem[] = [];
+  for (const r of raw.slice(0, 12)) {
+    if (!r || typeof r !== 'object') continue;
+    const o = r as Record<string, unknown>;
+    const id = typeof o.id === 'string' ? o.id.trim() : '';
+    const title = clip(o.title, 160);
+    if (!ITEM_ID.test(id) || !title || out.some((x) => x.id === id)) continue;
+    const actions = (Array.isArray(o.actions) ? o.actions : []).filter((a): a is ItemAction =>
+      (ITEM_ACTIONS as readonly string[]).includes(a as string),
+    );
+    if (actions.length === 0) continue;
+    const item: ActionItem = { id, title, actions: [...new Set(actions)] };
+    const detail = clip(o.detail, 160);
+    const next = clip(o.next, 200);
+    if (detail) item.detail = detail;
+    if (next) item.next = next;
+    out.push(item);
+  }
+  return out.length ? out : null;
+}
+
+/** Agents attach items as a fenced ```bono-actions JSON block; it is removed from the text. */
+export function extractItems(text: string): { text: string; items: ActionItem[] | null } {
+  const m = /\n?```bono-actions[ \t]*\n([\s\S]*?)\n```[ \t]*/.exec(text);
+  if (!m) return { text, items: null };
+  let items: ActionItem[] | null = null;
+  try {
+    items = validateItems(JSON.parse(m[1]));
+  } catch {
+    items = null;
+  }
+  return {
+    text: (text.slice(0, m.index) + text.slice(m.index + m[0].length)).replace(/\n{3,}/g, '\n\n').trim(),
+    items,
+  };
 }
 
 /** "No", "Not now", "Later", "Deny", "Skip"... */
