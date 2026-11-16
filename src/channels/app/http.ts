@@ -269,6 +269,15 @@ export function createAppHttpServer(deps: AppApiDeps, hub: EventHub): http.Serve
       return json(res, 200, { message: await deps.itemAction(device, message, item, action, arg) });
     }
 
+    if (method === 'POST' && route[0] === 'archive' && route.length === 1) {
+      const body = await readJson(req);
+      const message = deps.store.getMessage(typeof body.messageId === 'string' ? body.messageId : '');
+      if (!message || message.userHandle !== handle) throw new HttpError(404, 'no such message');
+      const updated = deps.store.setArchived(message.id, body.archived !== false)!;
+      hub.publishMessage(updated);
+      return json(res, 200, { message: updated });
+    }
+
     if (method === 'POST' && route[0] === 'feedback' && route.length === 1) {
       const body = await readJson(req);
       const message = deps.store.getMessage(typeof body.messageId === 'string' ? body.messageId : '');

@@ -71,6 +71,11 @@ describe('app feedback', () => {
     expect(store.feedbackSince(since, ['app:alex/family']).map((r) => r.id)).toEqual(['m4']);
     expect(store.feedbackSince(since, [])).toEqual([]);
     expect(store.setFeedback('m1', null)!.feedback).toBeNull();
+
+    const archived = store.setArchived('m1', true)!;
+    expect(archived.archivedAt).toBeTruthy();
+    expect(archived.rev).toBeGreaterThan(rated.rev);
+    expect(store.setArchived('m1', false)!.archivedAt).toBeNull();
   });
 
   it('reports no hit rate when nothing was rated', () => {

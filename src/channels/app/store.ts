@@ -89,6 +89,8 @@ export interface AppMessage {
   items: ActionItem[] | null;
   /** The person's verdict on an agent message (suggestions, briefs, digests). */
   feedback: Feedback | null;
+  /** Set when the person archived it from Home (swipe) or every item on a suggestion was handled. */
+  archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -146,6 +148,7 @@ interface MessageRow {
   items_json: string | null;
   feedback: string | null;
   feedback_at: string | null;
+  archived_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -267,6 +270,7 @@ export class AppStore {
       this.db.exec('ALTER TABLE messages ADD COLUMN feedback TEXT');
       this.db.exec('ALTER TABLE messages ADD COLUMN feedback_at TEXT');
     }
+    if (!mcols.some((c) => c.name === 'archived_at')) this.db.exec('ALTER TABLE messages ADD COLUMN archived_at TEXT');
   }
 
   close(): void {
@@ -415,7 +419,7 @@ export class AppStore {
   // ── Messages ──
 
   insertMessage(
-    msg: Omit<AppMessage, 'rev' | 'updatedAt' | 'createdAt' | 'category' | 'items' | 'feedback'> & {
+    msg: Omit<AppMessage, 'rev' | 'updatedAt' | 'createdAt' | 'category' | 'items' | 'feedback' | 'archivedAt'> & {
       createdAt?: string;
       category?: MessageCategory | null;
       items?: ActionItem[] | null;
@@ -516,6 +520,16 @@ export class AppStore {
     this.db
       .prepare('UPDATE messages SET rev = ?, items_json = ?, updated_at = ? WHERE id = ?')
       .run(rev, JSON.stringify(items), new Date().toISOString(), messageId);
+    return this.getMessage(messageId);
+  }
+
+  /** Archive from (or, with false, bring back to) Home; bumps rev so every device updates. */
+  setArchived(messageId: string, archived: boolean): AppMessage | null {
+    if (!this.getMessage(messageId)) return null;
+    const now = new Date().toISOString();
+    this.db
+      .prepare('UPDATE messages SET rev = ?, archived_at = ?, updated_at = ? WHERE id = ?')
+      .run(this.nextRev(), archived ? now : null, now, messageId);
     return this.getMessage(messageId);
   }
 
@@ -734,6 +748,7 @@ function toMessage(row: MessageRow): AppMessage {
     failure: row.failure === 1,
     category: MESSAGE_CATEGORIES.includes(row.category as MessageCategory) ? (row.category as MessageCategory) : null,
     items: row.items_json ? (JSON.parse(row.items_json) as ActionItem[]) : null,
+    archivedAt: row.archived_at,
     feedback: FEEDBACK_VALUES.includes(row.feedback as Feedback) ? (row.feedback as Feedback) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

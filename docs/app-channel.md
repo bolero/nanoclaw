@@ -56,6 +56,7 @@ All routes are under `/v1`; everything except `health` and `pair` needs `Authori
 | `GET /sync?after=<rev>&limit=` | every message created or changed after `rev`, for the offline cache |
 | `POST /actions` `{messageId, value}` | answer a card (approval or agent question) |
 | `POST /items` `{messageId, itemId, action, arg?}` | press a per-item button (`done`, `snooze` with `1d`/`3d`/`1w`, `next`, `drop`, `stop`, `add`, `dismiss`); 409 if already handled |
+| `POST /archive` `{messageId, archived}` | archive a message from Home (or `archived: false` to bring it back); a suggestion is archived automatically once all its items are handled |
 | `POST /feedback` `{messageId, value}` | mark an agent message `useful`, `not_useful` or `clear`; recorded only, the agent is not woken |
 | `GET /events` | SSE: `message` (id = rev) and `typing` events; resumes from `Last-Event-ID` |
 | `GET /files/:id` | attachment bytes |
@@ -63,7 +64,7 @@ All routes are under `/v1`; everything except `health` and `pair` needs `Authori
 | `GET /dashboard` | `{generatedAt, timezone, boards}`: boards from the collector file (`APP_DASHBOARD_FILE`, default `data/app-channel/dashboard.json`) whose `audience` lists the caller's handle; 404 when there is none |
 | `PUT /devices/me/push` `{apnsToken, environment}` | register for push; `environment` is `development` (direct installs) or `production` (TestFlight) |
 
-Message: `{id, rev, conversationId, direction: in|out, kind: text|card, text (Markdown), card?: {questionId, title, question, options[{label, value, style?}], resolution?}, files[{id, filename, mimeType, size}], senderName, failure, category, items?, feedback: useful|not_useful|null, createdAt, updatedAt}`.
+Message: `{id, rev, conversationId, direction: in|out, kind: text|card, text (Markdown), card?: {questionId, title, question, options[{label, value, style?}], resolution?}, files[{id, filename, mimeType, size}], senderName, failure, category, items?, feedback: useful|not_useful|null, archivedAt, createdAt, updatedAt}`.
 
 The channel keeps its own store in `data/app-channel/` (devices, pairing codes, message mirror, files, avatars); routing state stays in the central DB.
 

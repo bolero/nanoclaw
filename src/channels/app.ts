@@ -398,7 +398,11 @@ export function createAppAdapter(
         undo: ['undone', 'Undo requested'],
       };
       const [state, label] = outcome[action];
-      const updated = store.setItemState(message.id, item.id, state, label)!;
+      let updated = store.setItemState(message.id, item.id, state, label)!;
+      // A suggestion leaves Home once every item on it has been acted on.
+      if (updated.category === 'suggestion' && updated.items?.every((i) => i.state)) {
+        updated = store.setArchived(updated.id, true)!;
+      }
       hub.publishMessage(updated);
       // The person sees a short line; the agent gets the exact item id and verb.
       const shown = `${label} · ${item.title}`.slice(0, 200);
