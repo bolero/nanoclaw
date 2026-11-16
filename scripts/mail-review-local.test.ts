@@ -8,6 +8,7 @@ import {
   parseReview,
   preprocess,
   runOnce,
+  actionSuggestion,
   type State,
   suggestionText,
   updatePackages,
@@ -144,7 +145,42 @@ describe('mail-review-local run', () => {
     const state: State = { since: 0, done: {} };
     await runOnce(d, state, [], { maxPerRun: 10, digestHour: 10 });
     await runOnce(d, state, [], { maxPerRun: 10, digestHour: 10 });
+    expect(notes).toHaveLength(2);
+    expect(notes[0]).toMatch(/^\*\*To do from email: Sign the field-trip form by Fri\*\*/);
+    expect(notes[1]).toMatch(/Needs action\*\*\n- Sign the field-trip form/);
+  });
+
+  it('suggests action emails right away with Add task / Dismiss, except starred ones', async () => {
+    const { d, notes } = deps({
+      m1: '{"category":"action","summary":"Camp RSVP","action":"Confirm Fall Camp attendance","due_date":"2026-11-19"}',
+      m2: '{"category":"action","summary":"Starred thing","action":"Reply to teacher"}',
+    });
+    const items: object[][] = [];
+    d.notify = async (t, it) => {
+      notes.push(t);
+      if (it) items.push(it);
+    };
+    d.fetch = async (id) => ({
+      id,
+      internalDate: 0,
+      from: 'School',
+      subject: id,
+      text: `mail ${id}`,
+      starred: id === 'm2',
+    });
+    const state: State = { since: 0, done: {} };
+    await runOnce(d, state, [], { maxPerRun: 10, digestHour: 23 });
     expect(notes).toHaveLength(1);
-    expect(notes[0]).toMatch(/Needs action\*\*\n- Sign the field-trip form/);
+    expect(items[0][0]).toEqual({
+      id: 'mailaction:m1',
+      title: 'Confirm Fall Camp attendance (due 2026-11-19)',
+      detail: 'School · due 2026-11-19',
+      next: 'Add a reminder due 2026-11-19',
+      actions: ['add', 'dismiss'],
+    });
+    expect(state.done.m2.suggested).toMatch(/starred/);
+    expect(
+      actionSuggestion({ category: 'action', summary: 's', due_date: 'soon' }, { from: 'X', subject: '' }).items[0],
+    ).toMatchObject({ title: 's' });
   });
 });

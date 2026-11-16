@@ -211,6 +211,37 @@ export function suggestionText(
   return { text, reply, items };
 }
 
+/**
+ * An email that needs the reader to do something: one Home suggestion with Add task / Dismiss.
+ * The agent gets only the item title (the one-line action and due date) when Add is tapped;
+ * the id carries the Gmail message id so it can read the email if it needs more.
+ */
+export function actionSuggestion(
+  r: Review,
+  email: { from: string; subject: string },
+  messageId = 'x',
+): { text: string; items: object[] } {
+  const action = cleanLine(r.action ?? r.summary, 120);
+  const due = r.due_date && ISO.test(r.due_date) ? r.due_date : undefined;
+  const text = [
+    `**To do from email: ${action}**`,
+    r.summary,
+    `From ${email.from}${email.subject ? ` · ${email.subject}` : ''}`,
+    '',
+    '_Local mail review (trial): read and classified on the home network only._',
+  ].join('\n');
+  const items = [
+    {
+      id: `mailaction:${messageId.replace(/[^A-Za-z0-9]/g, '').slice(0, 40)}`,
+      title: `${action}${due ? ` (due ${due})` : ''}`.slice(0, 140),
+      detail: `${email.from}${due ? ` · due ${due}` : ''}`.slice(0, 80),
+      next: due ? `Add a reminder due ${due}` : 'Add a reminder',
+      actions: ['add', 'dismiss'],
+    },
+  ];
+  return { text, items };
+}
+
 // ---------- packages ----------
 
 export interface PackageEntry {
@@ -246,6 +277,8 @@ export interface Found {
   from: string;
   subject: string;
   text: string;
+  /** Starred mail is handled in full by the agent's starred intake; no separate suggestion. */
+  starred?: boolean;
 }
 
 export interface Deps {
@@ -261,7 +294,10 @@ export interface Deps {
 
 export interface State {
   since: number; // ms; messages older than this are never reviewed
-  done: Record<string, { at: string; category: string; summary: string; action?: string; bill?: string }>;
+  done: Record<
+    string,
+    { at: string; category: string; summary: string; action?: string; bill?: string; suggested?: string }
+  >;
   digestSentFor?: string; // YYYY-MM-DD
 }
 
@@ -362,6 +398,13 @@ export async function runOnce(
       }
     } else if (review.category === 'action') {
       rec.action = review.action ?? review.summary;
+      if (mail.starred) {
+        rec.suggested = 'starred: left to the agent';
+      } else {
+        const s = actionSuggestion(review, mail, m.id);
+        if (!opts.dryRun) await deps.notify(s.text, s.items);
+        rec.suggested = 'yes';
+      }
     }
     state.done[m.id] = rec;
   }
@@ -508,6 +551,7 @@ async function main(): Promise<void> {
         from: cleanLine(name, 60),
         subject: cleanLine(header(msg, 'Subject') ?? '', 160),
         text: extractBody(msg.payload).text,
+        starred: (msg as { labelIds?: string[] }).labelIds?.includes('STARRED') ?? false,
       };
     },
     classify: (system, user) => ollamaChat(ollama, model, system, user, REVIEW_SCHEMA),
@@ -559,7 +603,7 @@ async function main(): Promise<void> {
           'Mail review (local)',
           '--category',
           // Bill suggestions and the daily digest are rateable (Useful / Not useful in the app).
-          text.startsWith('**New bill') || text.startsWith('**Local mail review') ? 'suggestion' : 'notice',
+          /^\*\*(New bill|To do from email|Local mail review)/.test(text) ? 'suggestion' : 'notice',
         ],
         { timeout: 30_000 },
       );
