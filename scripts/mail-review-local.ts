@@ -383,7 +383,7 @@ export async function runOnce(
         lines.push('', '**Bills**', ...bills.slice(0, 15).map((r) => `- ${r.summary} — ${r.bill ?? ''}`));
       const actions = todays.filter((r) => r.category === 'action');
       if (actions.length) lines.push('', '**Needs action**', ...actions.slice(0, 20).map((r) => `- ${r.action}`));
-      lines.push('', '_Tell bono "trial: wrong about …" to note mistakes._');
+      lines.push('', '_Mark this Useful or Not useful; tell bono "trial: wrong about …" to note a mistake._');
       const text = lines.join('\n');
       if (!opts.dryRun) await deps.notify(text.length > 1950 ? `${text.slice(0, 1940)}\n…` : text);
     }
@@ -558,7 +558,8 @@ async function main(): Promise<void> {
           '--sender',
           'Mail review (local)',
           '--category',
-          text.startsWith('**New bill') ? 'suggestion' : 'notice',
+          // Bill suggestions and the daily digest are rateable (Useful / Not useful in the app).
+          text.startsWith('**New bill') || text.startsWith('**Local mail review') ? 'suggestion' : 'notice',
         ],
         { timeout: 30_000 },
       );
