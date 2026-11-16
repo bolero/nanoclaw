@@ -46,7 +46,7 @@ export interface CardData {
 export type CardStatus = 'working' | 'declined' | 'completed' | 'failed';
 
 /** Per-item actions on an agent message (briefs, suggestions): one row per item in the app. */
-export const ITEM_ACTIONS = ['done', 'snooze', 'next', 'drop', 'stop', 'add', 'dismiss'] as const;
+export const ITEM_ACTIONS = ['done', 'snooze', 'next', 'drop', 'stop', 'add', 'dismiss', 'undo'] as const;
 export type ItemAction = (typeof ITEM_ACTIONS)[number];
 export interface ActionItem {
   /** Stable id the agent understands, e.g. "omnifocus:gg9DRW" or "bill:18c2f". */
@@ -57,7 +57,7 @@ export interface ActionItem {
   next?: string;
   actions: ItemAction[];
   /** Set when the person acts: done, snoozed, dropped, stopped, sent (next/add), dismissed. */
-  state?: 'done' | 'snoozed' | 'dropped' | 'stopped' | 'sent' | 'dismissed';
+  state?: 'done' | 'snoozed' | 'dropped' | 'stopped' | 'sent' | 'dismissed' | 'undone';
   stateLabel?: string;
   stateAt?: string;
 }

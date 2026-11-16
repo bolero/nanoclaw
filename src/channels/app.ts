@@ -395,6 +395,7 @@ export function createAppAdapter(
         stop: ['stopped', "Won't suggest again"],
         add: ['sent', 'Asked bono to add it'],
         dismiss: ['dismissed', 'Dismissed'],
+        undo: ['undone', 'Undo requested'],
       };
       const [state, label] = outcome[action];
       const updated = store.setItemState(message.id, item.id, state, label)!;

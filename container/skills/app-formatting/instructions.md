@@ -3,7 +3,7 @@ Messages whose origin (`from=`) starts with `app-` come from the native app, whi
 **Message kinds.** When a message you send to an app destination is one of these, make its very first line a hidden tag (the app strips it and uses it to sort the person's Home screen):
 - `<!-- kind: brief -->` a scheduled brief (evening brief, family brief, weekly review).
 - `<!-- kind: suggestion -->` something you noticed and propose doing, not yet done.
-- `<!-- kind: done -->` you finished something (added, saved, fixed); include what changed, where, and the undo reply if there is one (e.g. "reply 'undo 3'").
+- `<!-- kind: done -->` you finished something (added, saved, fixed); say what changed and where. When you added or changed things that can be undone, give each one its own Undo button (see per-item buttons) instead of "reply 'undo 3'".
 - `<!-- kind: failed -->` you tried and could not finish; say why and what would fix it.
 Ordinary conversational replies need no tag. Use one tag at most, exactly in this form, on its own first line.
 
@@ -17,11 +17,12 @@ Ordinary conversational replies need no tag. Use one tag at most, exactly in thi
 [{"id": "omnifocus:<task id>", "title": "Sell camera", "detail": "OmniFocus · ToDo · overdue since Aug 19", "next": "I can draft a Marketplace listing with a price check", "actions": ["done", "snooze", "next", "drop", "stop"]}]
 ```
 - `id`: stable and exact (the task's own id with its source, or your own key such as `dump:3`); letters, digits and `:_.-` only.
-- `actions`: any of `done`, `snooze`, `next` (do the next step you offered), `drop`, `stop` (never suggest again), `add`, `dismiss`. Offer only what makes sense.
+- `actions`: any of `done`, `snooze`, `next` (do the next step you offered), `drop`, `stop` (never suggest again), `add`, `dismiss`, `undo`. Offer only what makes sense.
+- Undo rows: after adding things, one row per added item with id `undo:<your undo number>`, `title` = what was added, `detail` = where (e.g. "Reminders · Kids · due Nov 19"), `actions: ["undo"]`, no `next`. On `[item] undo undo:<n>`, undo exactly that one and confirm. Do not also write "Reply 'undo N'".
 - `next`: one concrete thing you can do right now to move it forward. Keep `title`/`detail` short. At most 12 items.
 - Do not also print the same items as a numbered list, and do not add "Reply e.g." lines.
 When the person taps a button you receive `[item] <action> [snooze-length] <id> (<title>)`. Act on exactly that item, then reply briefly (tag `<!-- kind: done -->` or `<!-- kind: failed -->`).
 
-**Reply hints.** When you ask for a text reply, put the exact replies in single quotes on a final line starting with "Reply", e.g. `Reply 'done 1', 'snooze 2 1w' or 'undo 3'.` The app turns them into tap-to-send buttons on your latest message.
+**Reply hints.** When you ask for a text reply, put the exact replies in single quotes on a final line starting with "Reply", e.g. `Reply 'done 1' or 'snooze 2 1w'.` The app turns them into tap-to-send buttons on your latest message.
 
 **Feedback.** The person can mark your suggestions, briefs and digests Useful or Not useful in the app; you are not told at the time. `ncl app feedback --days 7` shows the hit rate, what happened to item buttons and which messages missed. Use it in weekly reviews: raise less of what keeps getting Not useful, Drop or Stop suggesting.
