@@ -14,12 +14,13 @@ import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
-import { getAgentGroupByFolder } from '../../db/agent-groups.js';
+import { getAgentGroup, getAgentGroupByFolder } from '../../db/agent-groups.js';
 import {
   createMessagingGroup,
   createMessagingGroupAgent,
   getMessagingGroupAgentByPair,
   getMessagingGroupByPlatform,
+  getMessagingGroupAgents,
   getMessagingGroupsByAgentGroup,
 } from '../../db/messaging-groups.js';
 import { register } from '../../cli/registry.js';
@@ -286,6 +287,18 @@ register({
     const rows = getAppStore()
       .feedbackSince(since, scope)
       .filter((r) => !handle || r.userHandle === handle);
+    // Agent replies carry no sender name; name them after the agent wired to the conversation.
+    const names = new Map<string, string | null>();
+    for (const r of rows) {
+      if (r.sender) continue;
+      if (!names.has(r.conversationId)) {
+        const mg = await getMessagingGroupByPlatform(CHANNEL, r.conversationId);
+        const wired = mg ? await getMessagingGroupAgents(mg.id) : [];
+        const agent = wired[0] ? await getAgentGroup(wired[0].agent_group_id) : undefined;
+        names.set(r.conversationId, agent?.name ?? null);
+      }
+      r.sender = names.get(r.conversationId) ?? null;
+    }
     return summarizeFeedback(rows, since);
   },
   formatHuman: formatFeedback,
