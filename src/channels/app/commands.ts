@@ -214,7 +214,7 @@ register({
 register({
   name: 'app-notify',
   description:
-    "Post a one-line notice from a host job into a person's Home chat in the app (with push). Agents never see it. Usage: ncl app notify --user <handle> --text <text> [--sender <name>]",
+    "Post a one-line notice from a host job into a person's Home chat in the app (with push). Agents never see it. Usage: ncl app notify --user <handle> --text <text> [--sender <name>] [--category notice|suggestion|brief|done|failed]",
   access: 'open',
   hostOnly: true,
   resource: 'app',
@@ -222,15 +222,28 @@ register({
     const text = str(raw, 'text')!.trim();
     if (!text || text.length > 2000) throw new Error('--text must be 1..2000 characters');
     const sender = str(raw, 'sender', false)?.trim().slice(0, 60) || null;
-    return { handle: handleArg(raw), text, sender };
+    const category = str(raw, 'category', false) ?? 'notice';
+    if (!['notice', 'suggestion', 'brief', 'done', 'failed'].includes(category))
+      throw new Error('--category must be notice, suggestion, brief, done or failed');
+    return { handle: handleArg(raw), text, sender, category };
   },
-  handler: async ({ handle, text, sender }: { handle: string; text: string; sender: string | null }) => {
+  handler: async ({
+    handle,
+    text,
+    sender,
+    category,
+  }: {
+    handle: string;
+    text: string;
+    sender: string | null;
+    category: string;
+  }) => {
     const adapter = getChannelAdapter(CHANNEL);
     if (!adapter) throw new Error('the app channel is not running');
     const conversation = homeConversationId(handle);
     const id = await adapter.deliver(conversation, null, {
       kind: 'chat',
-      content: { text, category: 'notice', ...(sender ? { sender } : {}) },
+      content: { text, category, ...(sender ? { sender } : {}) },
     });
     if (!id) throw new Error('nothing was delivered');
     return { conversation, id };

@@ -759,6 +759,67 @@ export function carryOver(section: Section, previous: Section | undefined, previ
   return { ...previous, error: `${section.error}${when}` } as Section;
 }
 
+/** Packages found by the local mail review (data/mail-review/packages.json), for one person's Today. */
+export function collectPackages(dir: string): { handle: string | null; section: Section | null } {
+  let raw: { handle?: string; packages?: Array<Record<string, string | undefined>> };
+  try {
+    raw = JSON.parse(fs.readFileSync(path.join(dir, 'packages.json'), 'utf8'));
+  } catch {
+    return { handle: null, section: null };
+  }
+  const list = Array.isArray(raw) ? raw : (raw.packages ?? []);
+  if (list.length === 0) return { handle: raw.handle ?? null, section: null };
+  const label: Record<string, string> = {
+    ordered: 'Ordered',
+    shipped: 'Shipped',
+    out_for_delivery: 'Out for delivery',
+    delivered: 'Delivered',
+    delayed: 'Delayed',
+  };
+  const rows: Row[] = list.map((p) => ({
+    title: `${p.item ?? 'Package'} · ${p.from ?? ''}`.slice(0, 80),
+    detail: [label[p.status ?? ''] ?? 'In transit', p.carrier, p.eta ? `arrives ${p.eta}` : undefined]
+      .filter(Boolean)
+      .join(' · '),
+    status: (p.status === 'delivered' ? 'ok' : p.status === 'delayed' ? 'warn' : 'info') as RowStatus,
+    ...(p.eta ? { time: `${p.eta}T12:00:00.000Z` } : {}),
+  }));
+  const coming = list.filter((p) => p.status !== 'delivered').length;
+  return {
+    handle: raw.handle ?? null,
+    section: { id: 'packages', kind: 'rows', title: 'Packages', summary: `${coming} on the way`, rows },
+  };
+}
+
+/** Health of the local mail review trial, for Ops. */
+export function collectMailReview(dir: string, now = new Date()): Section | null {
+  let h: Record<string, unknown>;
+  try {
+    h = JSON.parse(fs.readFileSync(path.join(dir, 'health.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+  const lastOk = typeof h.lastOk === 'string' ? Date.parse(h.lastOk) : 0;
+  const staleMin = lastOk ? (now.getTime() - lastOk) / 60000 : Infinity;
+  const status: RowStatus = staleMin > 120 ? 'bad' : h.ok ? 'ok' : 'warn';
+  return {
+    id: 'mail-review',
+    kind: 'rows',
+    title: 'Local mail review (trial)',
+    rows: [
+      {
+        title: `${h.reviewedToday ?? 0} emails reviewed today · ${h.packages ?? 0} packages`,
+        detail: [
+          h.avgSeconds ? `${h.avgSeconds} s per email on ${h.model}` : `model ${h.model}`,
+          h.ok ? 'last run OK' : `last run: ${String(h.error ?? 'error').slice(0, 100)}`,
+        ].join(' · '),
+        status,
+        ...(typeof h.lastRun === 'string' ? { time: h.lastRun } : {}),
+      },
+    ],
+  };
+}
+
 export async function buildDashboard(opts: {
   cfg: HomeConfig;
   tz: string;
@@ -770,6 +831,7 @@ export async function buildDashboard(opts: {
   previous?: DashboardFile | null;
   bridges?: TaskBridges | null;
   readLog?: LogReader;
+  mailReviewDir?: string;
 }): Promise<DashboardFile> {
   const d = opts.cfg.dashboard;
   if (!d) throw new Error('home.yaml has no dashboard section');
@@ -798,13 +860,16 @@ export async function buildDashboard(opts: {
     const tasks = await guard('tasks', 'Due and overdue', 'rows', () =>
       collectTasks(d.tasks![handle]!, listNames, opts.bridges ?? null, opts.tz, opts.now, fetchFn),
     );
+    const pk = opts.mailReviewDir ? collectPackages(opts.mailReviewDir) : { handle: null, section: null };
+    const packages = pk.section && pk.handle === handle ? [pk.section] : [];
     todayBoards.push({
       id: 'today',
       title: 'Today',
       audience: [handle],
-      sections: d.weather ? [weather, tasks, events] : [tasks, events],
+      sections: d.weather ? [weather, ...packages, tasks, events] : [...packages, tasks, events],
     });
   }
+  const mailReview = opts.mailReviewDir ? collectMailReview(opts.mailReviewDir, opts.now) : null;
   const prev = (board: Board, id: string) =>
     opts.previous?.boards
       .find((b) => b.id === board.id && b.audience.join(',') === board.audience.join(','))
@@ -819,7 +884,12 @@ export async function buildDashboard(opts: {
     timezone: opts.tz,
     boards: [
       ...todayBoards.map(keep),
-      keep({ id: 'ops', title: 'Ops', audience: d.audience.ops, sections: [services, alerts, approvals, tasks] }),
+      keep({
+        id: 'ops',
+        title: 'Ops',
+        audience: d.audience.ops,
+        sections: [services, alerts, approvals, tasks, ...(mailReview ? [mailReview] : [])],
+      }),
     ],
   };
 }
@@ -863,6 +933,7 @@ async function main(): Promise<void> {
     reader: new CalendarReader(cfg, tokens),
     ncl: nclRunner(root),
     readLog: groupLogReader(path.join(root, 'groups')),
+    mailReviewDir: path.join(root, 'data', 'mail-review'),
     alertsDb: process.env.ALERTS_DB ?? path.join(os.homedir(), 'nanoclaw-alerts', 'alerts.db'),
     previous: readPrevious(out),
     bridges: readBridges(cfg),

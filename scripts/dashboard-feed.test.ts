@@ -428,3 +428,40 @@ describe('scheduled task outcomes', () => {
     expect(s.rows?.[0].detail).toMatch(/last run failed: the Dockhand proxy blocked/);
   });
 });
+
+describe('local mail review sections', () => {
+  it('shows packages for their owner and review health on Ops', async () => {
+    const fsm = await import('fs');
+    const os = await import('os');
+    const pathm = await import('path');
+    const { collectPackages, collectMailReview } = await import('./dashboard-feed.js');
+    const dir = fsm.mkdtempSync(pathm.join(os.tmpdir(), 'mr-'));
+    fsm.writeFileSync(
+      pathm.join(dir, 'packages.json'),
+      JSON.stringify({
+        handle: 'alex',
+        packages: [{ from: 'Amazon', item: 'Shoes', carrier: 'UPS', eta: '2026-11-18', status: 'shipped' }],
+      }),
+    );
+    const pk = collectPackages(dir);
+    expect(pk.handle).toBe('alex');
+    expect(pk.section?.rows?.[0].title).toBe('Shoes · Amazon');
+    expect(pk.section?.rows?.[0].detail).toBe('Shipped · UPS · arrives 2026-11-18');
+    const now = new Date('2026-11-16T20:00:00Z');
+    fsm.writeFileSync(
+      pathm.join(dir, 'health.json'),
+      JSON.stringify({
+        ok: true,
+        lastOk: '2026-11-16T19:50:00Z',
+        lastRun: '2026-11-16T19:50:00Z',
+        reviewedToday: 12,
+        packages: 1,
+        avgSeconds: 9.5,
+        model: 'gemma',
+      }),
+    );
+    expect(collectMailReview(dir, now)?.rows?.[0].status).toBe('ok');
+    expect(collectMailReview(dir, new Date('2026-11-17T00:00:00Z'))?.rows?.[0].status).toBe('bad');
+    fsm.rmSync(dir, { recursive: true, force: true });
+  });
+});
