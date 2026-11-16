@@ -56,7 +56,7 @@ All routes are under `/v1`; everything except `health` and `pair` needs `Authori
 | `GET /sync?after=<rev>&limit=` | every message created or changed after `rev`, for the offline cache |
 | `POST /actions` `{messageId, value}` | answer a card (approval or agent question) |
 | `POST /items` `{messageId, itemId, action, arg?}` | press a per-item button (`done`, `snooze` with `1d`/`3d`/`1w`, `next`, `drop`, `stop`, `add`, `dismiss`); 409 if already handled |
-| `POST /archive` `{messageId, archived}` | archive a message from Home (or `archived: false` to bring it back); a suggestion is archived automatically once all its items are handled |
+| `POST /archive` `{messageId \| messageIds[], archived}` | archive a message from Home (or `archived: false` to bring it back); a suggestion is archived automatically once all its items are handled |
 | `POST /feedback` `{messageId, value}` | mark an agent message `useful`, `not_useful` or `clear`; recorded only, the agent is not woken |
 | `GET /events` | SSE: `message` (id = rev) and `typing` events; resumes from `Last-Event-ID` |
 | `GET /files/:id` | attachment bytes |

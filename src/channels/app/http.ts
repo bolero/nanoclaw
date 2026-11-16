@@ -271,11 +271,20 @@ export function createAppHttpServer(deps: AppApiDeps, hub: EventHub): http.Serve
 
     if (method === 'POST' && route[0] === 'archive' && route.length === 1) {
       const body = await readJson(req);
-      const message = deps.store.getMessage(typeof body.messageId === 'string' ? body.messageId : '');
-      if (!message || message.userHandle !== handle) throw new HttpError(404, 'no such message');
-      const updated = deps.store.setArchived(message.id, body.archived !== false)!;
-      hub.publishMessage(updated);
-      return json(res, 200, { message: updated });
+      // One message ({messageId}) or several ({messageIds}, e.g. "Archive all updates").
+      const ids: string[] = Array.isArray(body.messageIds)
+        ? body.messageIds.filter((x: unknown): x is string => typeof x === 'string').slice(0, 500)
+        : [typeof body.messageId === 'string' ? body.messageId : ''];
+      const updated: AppMessage[] = [];
+      for (const id of ids) {
+        const message = deps.store.getMessage(id);
+        if (!message || message.userHandle !== handle) continue;
+        const m = deps.store.setArchived(message.id, body.archived !== false)!;
+        hub.publishMessage(m);
+        updated.push(m);
+      }
+      if (updated.length === 0) throw new HttpError(404, 'no such message');
+      return json(res, 200, Array.isArray(body.messageIds) ? { messages: updated } : { message: updated[0] });
     }
 
     if (method === 'POST' && route[0] === 'feedback' && route.length === 1) {
