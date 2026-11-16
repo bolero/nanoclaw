@@ -29,7 +29,15 @@ import path from 'path';
 
 import { log } from '../../log.js';
 import { conversationOwner } from './ids.js';
-import type { ActionItem, AppMessage, AppStore, Device, ItemAction } from './store.js';
+import {
+  FEEDBACK_VALUES,
+  type ActionItem,
+  type AppMessage,
+  type AppStore,
+  type Device,
+  type Feedback,
+  type ItemAction,
+} from './store.js';
 
 export interface ConversationSummary {
   id: string;
@@ -259,6 +267,21 @@ export function createAppHttpServer(deps: AppApiDeps, hub: EventHub): http.Serve
       if (item.state) throw new HttpError(409, 'already handled');
       const arg = typeof body.arg === 'string' ? body.arg.slice(0, 20) : null;
       return json(res, 200, { message: await deps.itemAction(device, message, item, action, arg) });
+    }
+
+    if (method === 'POST' && route[0] === 'feedback' && route.length === 1) {
+      const body = await readJson(req);
+      const message = deps.store.getMessage(typeof body.messageId === 'string' ? body.messageId : '');
+      if (!message || message.userHandle !== handle || message.direction !== 'out') {
+        throw new HttpError(404, 'no such message');
+      }
+      const value = body.value === null || body.value === 'clear' ? null : body.value;
+      if (value !== null && !FEEDBACK_VALUES.includes(value as Feedback)) {
+        throw new HttpError(400, 'value must be useful, not_useful or clear');
+      }
+      const updated = deps.store.setFeedback(message.id, value as Feedback | null)!;
+      hub.publishMessage(updated);
+      return json(res, 200, { message: updated });
     }
 
     if (method === 'GET' && route[0] === 'dashboard' && route.length === 1) {

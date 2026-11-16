@@ -465,3 +465,26 @@ describe('local mail review sections', () => {
     fsm.rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe('suggestion feedback section', () => {
+  it('shows the week hit rate and senders with ratings', async () => {
+    const { collectFeedback } = await import('./dashboard-feed.js');
+    const s = await collectFeedback((async () => ({
+      shown: 9,
+      useful: 3,
+      notUseful: 3,
+      hitRate: 0.5,
+      itemsTakenUp: 0.75,
+      senders: [
+        { sender: 'bono', shown: 6, useful: 3, notUseful: 1 },
+        { sender: 'Mail review', shown: 2, useful: 0, notUseful: 2 },
+        { sender: 'family', shown: 1, useful: 0, notUseful: 0 },
+      ],
+    })) as never);
+    expect(s.kind === 'rows' && s.rows?.map((r) => [r.title, r.status])).toEqual([
+      ['3 useful · 3 not useful · hit rate 50%', 'warn'],
+      ['bono', 'ok'],
+      ['Mail review', 'warn'],
+    ]);
+  });
+});

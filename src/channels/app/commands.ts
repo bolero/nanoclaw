@@ -1,6 +1,6 @@
 /**
- * `ncl app …` — operator commands for the app channel. Host-only: an agent can
- * never pair devices, wire conversations or change avatars.
+ * `ncl app …` — operator commands for the app channel. Host-only except `feedback`:
+ * an agent can never pair devices, wire conversations or change avatars.
  *
  *   ncl app pair --user <handle> [--name <display name>]
  *   ncl app connect --user <handle> --agent <folder> [--home]
@@ -8,6 +8,7 @@
  *   ncl app revoke --id <device id>
  *   ncl app avatar --agent <folder> [--file <image>] [--color <#rrggbb>]
  *   ncl app notify --user <handle> --text <text> [--sender <name>]
+ *   ncl app feedback [--days 7] [--user <handle>]   (agents: own conversations only)
  */
 import { randomUUID } from 'crypto';
 import fs from 'fs';
@@ -19,6 +20,7 @@ import {
   createMessagingGroupAgent,
   getMessagingGroupAgentByPair,
   getMessagingGroupByPlatform,
+  getMessagingGroupsByAgentGroup,
 } from '../../db/messaging-groups.js';
 import { register } from '../../cli/registry.js';
 import { readEnvFile } from '../../env.js';
@@ -29,6 +31,7 @@ import { resolveWiringDefaults } from '../channel-defaults.js';
 import { agentConversationId, FOLDER_RE, homeConversationId, parseHandle } from './ids.js';
 import { getChannelAdapter } from '../channel-registry.js';
 import { getAppStore } from './instance.js';
+import { formatFeedback, summarizeFeedback } from './feedback.js';
 
 const CHANNEL = 'app';
 
@@ -259,4 +262,31 @@ register({
     if (!id) throw new Error('nothing was delivered');
     return { conversation, id };
   },
+});
+
+register({
+  name: 'app-feedback',
+  description:
+    'How useful the app suggestions, briefs and digests were: Useful / Not useful taps and what happened to item buttons, with the hit rate and the misses. An agent sees only its own conversations. Use it in the weekly review to tune what you raise. Usage: ncl app feedback [--days 7] [--user <handle>]',
+  access: 'open',
+  resource: 'feedback',
+  parseArgs: (raw) => {
+    const days = Number(str(raw, 'days', false) ?? 7);
+    if (!Number.isInteger(days) || days < 1 || days > 90) throw new Error('--days must be 1..90');
+    const user = str(raw, 'user', false);
+    return { days, handle: user ? handleArg(raw) : null };
+  },
+  handler: async ({ days, handle }: { days: number; handle: string | null }, ctx) => {
+    const since = new Date(Date.now() - days * 86_400_000).toISOString();
+    let scope: string[] | undefined;
+    if (ctx.caller === 'agent') {
+      const groups = await getMessagingGroupsByAgentGroup(ctx.agentGroupId);
+      scope = groups.filter((g) => g.channel_type === CHANNEL).map((g) => g.platform_id);
+    }
+    const rows = getAppStore()
+      .feedbackSince(since, scope)
+      .filter((r) => !handle || r.userHandle === handle);
+    return summarizeFeedback(rows, since);
+  },
+  formatHuman: formatFeedback,
 });

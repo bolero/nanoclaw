@@ -87,8 +87,28 @@ export interface AppMessage {
   failure: boolean;
   category: MessageCategory | null;
   items: ActionItem[] | null;
+  /** The person's verdict on an agent message (suggestions, briefs, digests). */
+  feedback: Feedback | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export type Feedback = 'useful' | 'not_useful';
+export const FEEDBACK_VALUES: readonly Feedback[] = ['useful', 'not_useful'];
+
+/** One rated or actionable outgoing message, for the weekly hit rate. */
+export interface FeedbackRow {
+  id: string;
+  conversationId: string;
+  userHandle: string;
+  sender: string | null;
+  category: MessageCategory | null;
+  preview: string;
+  feedback: Feedback | null;
+  feedbackAt: string | null;
+  itemStates: Record<string, number>;
+  itemsOpen: number;
+  createdAt: string;
 }
 
 export interface Device {
@@ -124,6 +144,8 @@ interface MessageRow {
   failure: number;
   category: string | null;
   items_json: string | null;
+  feedback: string | null;
+  feedback_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -241,6 +263,10 @@ export class AppStore {
     const mcols = this.db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>;
     if (!mcols.some((c) => c.name === 'category')) this.db.exec('ALTER TABLE messages ADD COLUMN category TEXT');
     if (!mcols.some((c) => c.name === 'items_json')) this.db.exec('ALTER TABLE messages ADD COLUMN items_json TEXT');
+    if (!mcols.some((c) => c.name === 'feedback')) {
+      this.db.exec('ALTER TABLE messages ADD COLUMN feedback TEXT');
+      this.db.exec('ALTER TABLE messages ADD COLUMN feedback_at TEXT');
+    }
   }
 
   close(): void {
@@ -389,7 +415,7 @@ export class AppStore {
   // ── Messages ──
 
   insertMessage(
-    msg: Omit<AppMessage, 'rev' | 'updatedAt' | 'createdAt' | 'category' | 'items'> & {
+    msg: Omit<AppMessage, 'rev' | 'updatedAt' | 'createdAt' | 'category' | 'items' | 'feedback'> & {
       createdAt?: string;
       category?: MessageCategory | null;
       items?: ActionItem[] | null;
@@ -491,6 +517,57 @@ export class AppStore {
       .prepare('UPDATE messages SET rev = ?, items_json = ?, updated_at = ? WHERE id = ?')
       .run(rev, JSON.stringify(items), new Date().toISOString(), messageId);
     return this.getMessage(messageId);
+  }
+
+  /** Record (or clear, with null) the person's verdict on a message; bumps rev so clients update. */
+  setFeedback(messageId: string, value: Feedback | null): AppMessage | null {
+    if (!this.getMessage(messageId)) return null;
+    const now = new Date().toISOString();
+    this.db
+      .prepare('UPDATE messages SET rev = ?, feedback = ?, feedback_at = ?, updated_at = ? WHERE id = ?')
+      .run(this.nextRev(), value, value ? now : null, now, messageId);
+    return this.getMessage(messageId);
+  }
+
+  /**
+   * Agent messages since `since` that were rated, carried action items, or were
+   * suggestions/briefs (the things a person can find useful or not), oldest first.
+   * `conversationIds` limits the result (an agent sees only its own conversations).
+   */
+  feedbackSince(since: string, conversationIds?: string[]): FeedbackRow[] {
+    if (conversationIds && conversationIds.length === 0) return [];
+    const scope = conversationIds ? `AND conversation_id IN (${conversationIds.map(() => '?').join(',')})` : '';
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM messages WHERE direction = 'out' AND created_at >= ?
+           AND (feedback IS NOT NULL OR items_json IS NOT NULL OR category IN ('suggestion', 'brief'))
+           ${scope}
+         ORDER BY created_at ASC`,
+      )
+      .all(since, ...(conversationIds ?? [])) as MessageRow[];
+    return rows.map((row) => {
+      const m = toMessage(row);
+      const itemStates: Record<string, number> = {};
+      let itemsOpen = 0;
+      for (const it of m.items ?? []) {
+        if (it.state) itemStates[it.state] = (itemStates[it.state] ?? 0) + 1;
+        else itemsOpen++;
+      }
+      const firstLine = (m.card?.title || m.text).split('\n').find((l) => l.trim()) ?? '';
+      return {
+        id: m.id,
+        conversationId: m.conversationId,
+        userHandle: m.userHandle,
+        sender: m.senderName,
+        category: m.category,
+        preview: firstLine.replace(/^[#>*\s-]+/, '').slice(0, 120),
+        feedback: m.feedback,
+        feedbackAt: row.feedback_at,
+        itemStates,
+        itemsOpen,
+        createdAt: m.createdAt,
+      };
+    });
   }
 
   findCardByQuestion(questionId: string): AppMessage[] {
@@ -657,6 +734,7 @@ function toMessage(row: MessageRow): AppMessage {
     failure: row.failure === 1,
     category: MESSAGE_CATEGORIES.includes(row.category as MessageCategory) ? (row.category as MessageCategory) : null,
     items: row.items_json ? (JSON.parse(row.items_json) as ActionItem[]) : null,
+    feedback: FEEDBACK_VALUES.includes(row.feedback as Feedback) ? (row.feedback as Feedback) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

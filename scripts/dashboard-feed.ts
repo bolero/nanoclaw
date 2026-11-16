@@ -820,6 +820,36 @@ export function collectMailReview(dir: string, now = new Date()): Section | null
   };
 }
 
+/** Ops row: how useful the week's suggestions, briefs and digests were (Useful / Not useful taps). */
+export async function collectFeedback(ncl: NclRunner): Promise<Section> {
+  const f = (await ncl(['app', 'feedback', '--days', '7'])) as {
+    shown: number;
+    useful: number;
+    notUseful: number;
+    hitRate: number | null;
+    itemsTakenUp: number | null;
+    senders: Array<{ sender: string; shown: number; useful: number; notUseful: number }>;
+  };
+  const pct = (x: number | null) => (x === null ? '–' : `${Math.round(x * 100)}%`);
+  const rows: Row[] = [
+    {
+      title: `${f.useful} useful · ${f.notUseful} not useful · hit rate ${pct(f.hitRate)}`,
+      detail: `${f.shown} suggestions, briefs and digests · items taken up ${pct(f.itemsTakenUp)}`,
+      status: f.hitRate === null ? 'info' : f.hitRate >= 0.6 ? 'ok' : 'warn',
+    },
+    ...f.senders
+      .filter((x) => x.useful + x.notUseful > 0)
+      .map(
+        (x): Row => ({
+          title: x.sender,
+          detail: `${x.useful} useful · ${x.notUseful} not useful · ${x.shown} shown`,
+          status: x.notUseful > x.useful ? 'warn' : 'ok',
+        }),
+      ),
+  ];
+  return { id: 'feedback', kind: 'rows', title: 'Suggestions, last 7 days', rows };
+}
+
 export async function buildDashboard(opts: {
   cfg: HomeConfig;
   tz: string;
@@ -836,12 +866,13 @@ export async function buildDashboard(opts: {
   const d = opts.cfg.dashboard;
   if (!d) throw new Error('home.yaml has no dashboard section');
   const fetchFn = opts.fetchFn ?? fetch;
-  const [weather, events, services, approvals, tasks] = await Promise.all([
+  const [weather, events, services, approvals, tasks, feedback] = await Promise.all([
     guard('weather', 'Weather', 'weather', () => collectWeather(d.weather, fetchFn)),
     guard('events', 'Calendar', 'events', () => collectEvents(opts.cfg, opts.reader, opts.tz, opts.now)),
     guard('services', 'Services', 'rows', () => collectServices(d.gatus_url, fetchFn)),
     guard('approvals', 'Pending approvals', 'rows', () => collectApprovals(opts.ncl)),
     guard('tasks', 'Scheduled tasks', 'rows', () => collectScheduledTasks(opts.ncl, opts.tz, opts.readLog)),
+    guard('feedback', 'Suggestions, last 7 days', 'rows', () => collectFeedback(opts.ncl)),
   ]);
   const alerts = await guard('alerts', 'Alerts, last 24 h', 'rows', () => collectAlerts(opts.alertsDb, opts.now));
   const listNames = new Map(opts.cfg.reminders.lists.map((l) => [l.id, l.name]));
@@ -888,7 +919,7 @@ export async function buildDashboard(opts: {
         id: 'ops',
         title: 'Ops',
         audience: d.audience.ops,
-        sections: [services, alerts, approvals, tasks, ...(mailReview ? [mailReview] : [])],
+        sections: [services, alerts, approvals, tasks, feedback, ...(mailReview ? [mailReview] : [])],
       }),
     ],
   };

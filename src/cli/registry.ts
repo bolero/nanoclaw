@@ -26,6 +26,7 @@ export const GROUP_SCOPE_RESOURCES = new Set([
   'templates',
   'ops',
   'quiet-hours',
+  'feedback',
 ]);
 
 export type Access = 'open' | 'approval' | 'hidden';

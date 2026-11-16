@@ -55,13 +55,15 @@ All routes are under `/v1`; everything except `health` and `pair` needs `Authori
 | `GET /feed?before=&limit=` | `{needsYou, messages}`: open cards plus agent messages across all conversations |
 | `GET /sync?after=<rev>&limit=` | every message created or changed after `rev`, for the offline cache |
 | `POST /actions` `{messageId, value}` | answer a card (approval or agent question) |
+| `POST /items` `{messageId, itemId, action, arg?}` | press a per-item button (`done`, `snooze` with `1d`/`3d`/`1w`, `next`, `drop`, `stop`, `add`, `dismiss`); 409 if already handled |
+| `POST /feedback` `{messageId, value}` | mark an agent message `useful`, `not_useful` or `clear`; recorded only, the agent is not woken |
 | `GET /events` | SSE: `message` (id = rev) and `typing` events; resumes from `Last-Event-ID` |
 | `GET /files/:id` | attachment bytes |
 | `GET /agents/:folder/avatar` | avatar image |
 | `GET /dashboard` | `{generatedAt, timezone, boards}`: boards from the collector file (`APP_DASHBOARD_FILE`, default `data/app-channel/dashboard.json`) whose `audience` lists the caller's handle; 404 when there is none |
 | `PUT /devices/me/push` `{apnsToken, environment}` | register for push; `environment` is `development` (direct installs) or `production` (TestFlight) |
 
-Message: `{id, rev, conversationId, direction: in|out, kind: text|card, text (Markdown), card?: {questionId, title, question, options[{label, value, style?}], resolution?}, files[{id, filename, mimeType, size}], senderName, failure, createdAt, updatedAt}`.
+Message: `{id, rev, conversationId, direction: in|out, kind: text|card, text (Markdown), card?: {questionId, title, question, options[{label, value, style?}], resolution?}, files[{id, filename, mimeType, size}], senderName, failure, category, items?, feedback: useful|not_useful|null, createdAt, updatedAt}`.
 
 The channel keeps its own store in `data/app-channel/` (devices, pairing codes, message mirror, files, avatars); routing state stays in the central DB.
 
@@ -82,3 +84,11 @@ exists, `APP_PUSH_QUIET_HOURS` (`21-7` or `off`) is the default.
   option `working`. The agent's next `done`/`failed` message in the same conversation within 24 hours sets `completed` /
   `failed` and `resultMessageId`. Host terminal edits (approvals) set `declined` when the resolution says denied/expired.
 - Conversations carry `shared: true` when more than one app user has a chat with the same agent (e.g. a family agent).
+
+## Feedback and hit rate
+
+The app shows **Useful / Not useful** on suggestions, briefs and digests. Taps are stored on the message and do not wake
+the agent. `ncl app feedback [--days 7] [--user <handle>]` summarizes them with the per-item outcomes (done, snoozed,
+dropped, stopped, dismissed, still open): counts per sender, the hit rate (useful ÷ rated), the share of items taken up,
+and the messages marked not useful. Agents may run it (resource `feedback`) and see only their own conversations, so a
+weekly review can drop what keeps missing. The dashboard collector adds a *Suggestions, last 7 days* section to Ops.
