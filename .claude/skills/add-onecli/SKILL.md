@@ -81,6 +81,39 @@ command arguments, or the container environment.
   see [ChatGPT OAuth refresh](references/chatgpt-oauth-refresh.md) for the
   manual reauthentication path.
 
+## Approvals and access on 1.45
+
+The pinned gateway has no hand-written rules. Access is set per agent:
+
+- **App connections** (catalog apps such as Gmail or Vercel): each tool is
+  Allow, Ask or Never. Set it in the console (the agent's page, **Manage
+  permissions** on the connection) or with
+  `onecli agents grants attach-connection --id <agent-id> --connection-id <connection-id> --allow <tool>,<tool> --ask <tool>`;
+  `onecli apps permission-definition --provider <provider>` lists the tool
+  IDs. An Ask tool is held and NanoClaw sends the approval card. Once you pick
+  tools, every tool you did not list, and every tool added to the catalog
+  later, is Never. Full access (attach with no `--allow` or `--ask`) keeps new
+  tools allowed; setting every tool back to Allow in the console after
+  customizing does not. The gateway tells tools apart only by host, method and
+  path, so tools that share one (GitHub's GraphQL query and mutation tools are
+  both `POST /graphql`) all get the most permissive of their settings: Allow
+  beats Ask, Ask beats Never.
+- **Plain vault keys** (HubSpot, Dial, Exa, any host with no catalog app): on
+  or off per agent, nothing more. Use `attach-secret` (above) or the switch on
+  the agent's page. The key's host and path patterns decide which requests get
+  the key, not whether a request is allowed. There is no Ask, no method match
+  and no block rule, so a call made with a plain key cannot be held for
+  approval.
+- **Connect links do not attach.** A key saved through the link an agent shows
+  after `credential_not_found` belongs to no agent; the retry fails with
+  `access_restricted` until you attach it. A new app account saved through an
+  `app_not_connected` link opens an agent-access dialog with every agent off:
+  turn on the agent that asked.
+- **Hand-written project rules** (host, method and path with allow, ask or
+  block) are gone: the old rule endpoints and the CLI's `rules` and `policy
+  rules` commands answer 410 Gone. OneCLI 2.x self-hosted has such rules again
+  as org policy, but NanoClaw does not support 2.x yet.
+
 ## Validate
 
 ```nc:run effect:build
@@ -94,3 +127,17 @@ pnpm exec vitest run src/gateway-providers/onecli-files.test.ts src/gateway-prov
 The setup consumer writes `NANOCLAW_GATEWAY_PROVIDER=onecli` only after every directive above succeeds. Claude authentication is then completed through `scripts/auth.ts`; credentials never enter an agent container.
 
 During an atomic NanoClaw upgrade, `scripts/detect.ts` identifies an older implicit OneCLI installation so the generic updater can preserve that choice before the service restarts.
+
+## Check the proxy address
+
+A gateway on another host must hand agents its own address in `GATEWAY_BASE_URL`. OneCLI 1.45 defaults it to `host.docker.internal:10255`, the agent's own machine, so with a remote gateway every model call hangs with no reply. When setup was pointed at a remote gateway (`NANOCLAW_ONECLI_API_HOST`), this check reads the proxy address the gateway hands agents. It never fails the install.
+
+```nc:run effect:fetch capture:proxy_warn=.warn,proxy_hint=.hint
+pnpm exec tsx .claude/skills/add-onecli/scripts/proxy-check.ts || echo '{"warn":"no","hint":"none"}'
+```
+
+When that address is `host.docker.internal`, a loopback address or a wildcard address, show the user the exact `GATEWAY_BASE_URL=<host>:<port>` line to set on the gateway host, and point them at "Remote gateway" in [Upgrading the OneCLI gateway](payload/docs/onecli-upgrades.md#remote-gateway):
+
+```nc:operator when:proxy_warn=yes
+{{proxy_hint}}
+```
