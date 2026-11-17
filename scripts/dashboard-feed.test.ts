@@ -541,3 +541,78 @@ describe('event title aliases', () => {
     expect(titles.sort()).toEqual(['Ballet', 'Work (busy)']);
   });
 });
+
+describe('family sections on Today', () => {
+  it('reads meals and drives for today and tomorrow from the plan file', async () => {
+    const fs = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
+    const { collectFamilyPlan } = await import('./dashboard-feed.js');
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fp-')), 'plan.json');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        meals: {
+          '2026-11-16': { dinner: 'Dal and rice' },
+          '2026-11-17': { lunch: 'Pasta', dinner: 'Tacos' },
+          '2026-11-20': { dinner: 'Later' },
+        },
+        drives: [
+          { id: 'a', date: '2026-11-17', time: '16:00', title: 'Ballet', who: 'Aanya', drop: 'Bavya', pickup: null },
+          {
+            id: 'b',
+            date: '2026-11-16',
+            time: '17:30',
+            title: 'Gymnastics',
+            who: 'Anika',
+            drop: 'Abhijeet',
+            pickup: 'Bavya',
+          },
+          { id: 'c', date: '2026-11-25', title: 'Far away' },
+        ],
+      }),
+    );
+    const s = collectFamilyPlan(file, 'America/Los_Angeles', new Date('2026-11-16T20:00:00Z'));
+    expect(s.map((x) => x.id)).toEqual(['meals', 'drives']);
+    const rows = (id: string) => {
+      const x = s.find((y) => y.id === id)!;
+      return x.kind === 'rows' ? x.rows! : [];
+    };
+    expect(rows('meals').map((r) => [r.title, r.detail])).toEqual([
+      ['Today', 'Dinner: Dal and rice'],
+      ['Tomorrow', 'Lunch: Pasta · Dinner: Tacos'],
+    ]);
+    expect(rows('drives').map((r) => [r.title, r.status])).toEqual([
+      ['Gymnastics (Anika)', 'ok'],
+      ['Ballet (Aanya)', 'warn'],
+    ]);
+    expect(rows('drives')[1].detail).toBe('Tomorrow 16:00 · drop Bavya · pick up ?');
+    expect(collectFamilyPlan(file + '.missing', 'UTC')).toEqual([]);
+  });
+
+  it('lists shopping items per list through the read-only bridge', async () => {
+    const { collectShopping } = await import('./dashboard-feed.js');
+    const fetchFn = (async (_u: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      if (body.method === 'initialize')
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      if (body.method === 'notifications/initialized') return new Response('', { status: 202 });
+      const items = body.params.arguments.list_name === 'TJ' ? [{ title: 'Milk' }, { title: 'Eggs' }] : [];
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { structuredContent: { items } } }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    const s = await collectShopping(
+      [
+        { id: 'tj', name: 'TJ' },
+        { id: 'costco', name: 'Costco' },
+      ],
+      { key: 'k', remindersUrl: 'http://r/mcp' },
+      fetchFn,
+    );
+    expect(s.kind === 'rows' && s.rows).toEqual([{ title: 'TJ · 2', detail: 'Milk, Eggs', status: 'info' }]);
+    expect(s.kind === 'rows' && s.summary).toBe('2 items');
+  });
+});

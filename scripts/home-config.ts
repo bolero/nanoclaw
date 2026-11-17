@@ -102,6 +102,12 @@ export interface DashboardConfig {
   today_calendars: string[];
   /** Event titles shown differently on Today, matched case-insensitively (e.g. "Blocked Time" -> "Work (busy)"). */
   event_titles?: Record<string, string>;
+  /** Per app handle: calendars on that person's Today instead of `today_calendars`. */
+  today_calendars_by_handle?: Record<string, string[]>;
+  /** Shared shopping lists (Reminders list ids) shown on Today for `audience`. */
+  shopping?: { lists: string[]; audience: string[] };
+  /** A family plan file (meals, activities and drivers) kept by an agent, shown on Today for `audience`. */
+  family_plan?: { file: string; audience: string[] };
   /** Gatus base URL for service health on Ops. */
   gatus_url?: string;
   /** Per app handle: whose OmniFocus / Reminders tasks show on that person's Today (read-only). */
@@ -398,7 +404,18 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
     const d = v.obj(
       top.dashboard,
       'dashboard',
-      ['audience', 'today_calendars', 'gatus_url', 'weather', 'tasks', 'task_bridges', 'event_titles'],
+      [
+        'audience',
+        'today_calendars',
+        'gatus_url',
+        'weather',
+        'tasks',
+        'task_bridges',
+        'event_titles',
+        'today_calendars_by_handle',
+        'shopping',
+        'family_plan',
+      ],
       ['audience', 'today_calendars'],
     );
     const au = v.obj(d.audience, 'dashboard.audience', ['today', 'ops']);
@@ -414,6 +431,39 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
       },
       today_calendars,
     };
+    if (d.today_calendars_by_handle !== undefined) {
+      const t = v.obj(
+        d.today_calendars_by_handle,
+        'dashboard.today_calendars_by_handle',
+        Object.keys((d.today_calendars_by_handle as object) ?? {}),
+        [],
+      );
+      dashboard.today_calendars_by_handle = {};
+      for (const [handle, raw] of Object.entries(t)) {
+        const w = `dashboard.today_calendars_by_handle.${handle}`;
+        if (!HANDLE.test(handle)) v.err(w, 'invalid app handle');
+        const ids = v.strs(raw, w);
+        ids.forEach((c, i) => {
+          if (c && !calIds.has(c)) v.err(`${w}[${i}]`, `unknown calendar "${c}"`);
+        });
+        dashboard.today_calendars_by_handle[handle] = ids;
+      }
+    }
+    if (d.shopping !== undefined) {
+      const o = v.obj(d.shopping, 'dashboard.shopping', ['lists', 'audience']);
+      const lists = v.strs(o.lists, 'dashboard.shopping.lists');
+      lists.forEach((l, i) => {
+        if (l && !listIds.has(l)) v.err(`dashboard.shopping.lists[${i}]`, `unknown reminders list "${l}"`);
+      });
+      dashboard.shopping = { lists, audience: v.strs(o.audience, 'dashboard.shopping.audience', HANDLE) };
+    }
+    if (d.family_plan !== undefined) {
+      const o = v.obj(d.family_plan, 'dashboard.family_plan', ['file', 'audience']);
+      dashboard.family_plan = {
+        file: v.str(o.file, 'dashboard.family_plan.file', /^[A-Za-z0-9._/-]+\.json$/),
+        audience: v.strs(o.audience, 'dashboard.family_plan.audience', HANDLE),
+      };
+    }
     if (d.event_titles !== undefined) {
       const t = v.obj(d.event_titles, 'dashboard.event_titles', Object.keys((d.event_titles as object) ?? {}), []);
       dashboard.event_titles = {};

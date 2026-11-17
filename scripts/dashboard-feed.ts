@@ -338,9 +338,10 @@ export async function collectEvents(
   reader: CalendarReader,
   tz: string,
   now = new Date(),
+  calendarIds?: string[],
 ): Promise<Section> {
   const section: Section = { id: 'events', kind: 'events', title: 'Calendar' };
-  const ids = cfg.dashboard?.today_calendars ?? [];
+  const ids = calendarIds ?? cfg.dashboard?.today_calendars ?? [];
   const today = localDate(now, tz);
   const from = localMidnight(today, tz);
   const to = localMidnight(addDays(today, 7), tz);
@@ -868,6 +869,127 @@ export async function collectFeedback(ncl: NclRunner): Promise<Section> {
   return { id: 'feedback', kind: 'rows', title: 'Suggestions, last 7 days', rows };
 }
 
+// ---- Family: shopping lists and the family plan (meals, activities and drivers) -------------
+
+/** One row per shopping list: how many open items and the first few. Read-only bridge key. */
+export async function collectShopping(
+  lists: Array<{ id: string; name: string }>,
+  bridges: TaskBridges | null,
+  fetchFn: typeof fetch = fetch,
+): Promise<Section> {
+  const section: Section = { id: 'shopping', kind: 'rows', title: 'Shopping' };
+  if (!bridges?.remindersUrl) return { ...section, error: 'no Reminders bridge configured' };
+  const rows: Row[] = [];
+  const errors: string[] = [];
+  let total = 0;
+  for (const l of lists) {
+    try {
+      const r = (await mcpCall(
+        bridges.remindersUrl,
+        bridges.key,
+        'reminders_in_list',
+        { list_name: l.name },
+        fetchFn,
+      )) as {
+        items?: Array<{ title?: string }>;
+      };
+      const items = (r.items ?? []).map((i) => String(i.title ?? '').trim()).filter(Boolean);
+      total += items.length;
+      if (items.length)
+        rows.push({
+          title: `${l.name} · ${items.length}`,
+          detail: items.slice(0, 6).join(', ') + (items.length > 6 ? ', …' : ''),
+          status: 'info',
+        });
+    } catch (e) {
+      errors.push(`${l.name}: ${(e as Error).message.slice(0, 80)}`);
+    }
+  }
+  return {
+    ...section,
+    summary: total ? `${total} item${total === 1 ? '' : 's'}` : 'Nothing to buy',
+    rows,
+    ...(errors.length ? { error: errors.join('; ') } : {}),
+  };
+}
+
+export interface FamilyPlan {
+  meals?: Record<string, Partial<Record<'breakfast' | 'lunch' | 'dinner' | 'snack', string>>>;
+  drives?: Array<{
+    id: string;
+    date: string;
+    time?: string;
+    title: string;
+    who?: string;
+    drop?: string | null;
+    pickup?: string | null;
+    note?: string;
+  }>;
+}
+
+const clip = (s: unknown, n: number) =>
+  String(s ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, n);
+
+/** Meals and drives for today and tomorrow from the family agent's plan file (plain data, size-capped). */
+export function collectFamilyPlan(file: string, tz: string, now = new Date()): Section[] {
+  let plan: FamilyPlan;
+  try {
+    const raw = fs.readFileSync(file, 'utf8');
+    if (raw.length > 512 * 1024) throw new Error('plan file too large');
+    plan = JSON.parse(raw) as FamilyPlan;
+  } catch {
+    return [];
+  }
+  const today = localDate(now, tz);
+  const tomorrow = addDays(today, 1);
+  const label = (d: string) => (d === today ? 'Today' : 'Tomorrow');
+  const out: Section[] = [];
+
+  const mealRows: Row[] = [];
+  for (const d of [today, tomorrow]) {
+    const m = plan.meals?.[d];
+    if (!m) continue;
+    const parts = (['breakfast', 'lunch', 'snack', 'dinner'] as const)
+      .filter((k) => m[k])
+      .map((k) => `${k[0].toUpperCase()}${k.slice(1)}: ${clip(m[k], 60)}`);
+    if (parts.length) mealRows.push({ title: label(d), detail: parts.join(' · '), status: 'info' });
+  }
+  if (mealRows.length) out.push({ id: 'meals', kind: 'rows', title: 'Meals', rows: mealRows });
+
+  const drives = (plan.drives ?? [])
+    .filter((x) => x && (x.date === today || x.date === tomorrow))
+    .sort((a, b) => `${a.date} ${a.time ?? ''}`.localeCompare(`${b.date} ${b.time ?? ''}`))
+    .slice(0, 20);
+  if (drives.length) {
+    const rows: Row[] = drives.map((x) => {
+      const missing = !x.drop || !x.pickup;
+      const who = [
+        x.drop ? `drop ${clip(x.drop, 20)}` : 'drop ?',
+        x.pickup ? `pick up ${clip(x.pickup, 20)}` : 'pick up ?',
+      ];
+      return {
+        title: `${clip(x.title, 60)}${x.who ? ` (${clip(x.who, 20)})` : ''}`,
+        detail: [`${label(x.date)}${x.time ? ` ${clip(x.time, 5)}` : ''}`, ...who, x.note ? clip(x.note, 60) : '']
+          .filter(Boolean)
+          .join(' · '),
+        status: missing ? 'warn' : 'ok',
+      };
+    });
+    const open = drives.filter((x) => !x.drop || !x.pickup).length;
+    out.push({
+      id: 'drives',
+      kind: 'rows',
+      title: 'Activities & driving',
+      summary: open ? `${open} need a driver` : 'All covered',
+      rows,
+    });
+  }
+  return out;
+}
+
 export async function buildDashboard(opts: {
   cfg: HomeConfig;
   tz: string;
@@ -880,6 +1002,8 @@ export async function buildDashboard(opts: {
   bridges?: TaskBridges | null;
   readLog?: LogReader;
   mailReviewDir?: string;
+  /** Where relative paths in home.yaml (family_plan.file) resolve; defaults to the cwd. */
+  projectRoot?: string;
 }): Promise<DashboardFile> {
   const d = opts.cfg.dashboard;
   if (!d) throw new Error('home.yaml has no dashboard section');
@@ -894,21 +1018,40 @@ export async function buildDashboard(opts: {
   ]);
   const alerts = await guard('alerts', 'Alerts, last 24 h', 'rows', () => collectAlerts(opts.alertsDb, opts.now));
   const listNames = new Map(opts.cfg.reminders.lists.map((l) => [l.id, l.name]));
-  // Today is per person: shared weather and calendar, plus that person's own tasks.
+  // Today is per person: weather, that person's calendars and tasks, plus the family sections they share.
+  const listName = (id: string) => opts.cfg.reminders.lists.find((l) => l.id === id)?.name ?? id;
+  const shopping =
+    d.shopping && d.shopping.lists.length
+      ? await guard('shopping', 'Shopping', 'rows', () =>
+          collectShopping(
+            d.shopping!.lists.map((id) => ({ id, name: listName(id) })),
+            opts.bridges ?? null,
+            fetchFn,
+          ),
+        )
+      : null;
+  const familyPlan = d.family_plan
+    ? collectFamilyPlan(path.resolve(opts.projectRoot ?? process.cwd(), d.family_plan.file), opts.tz, opts.now)
+    : [];
+  const eventsFor = async (handle: string): Promise<Section> => {
+    const own = d.today_calendars_by_handle?.[handle];
+    return own
+      ? guard('events', 'Calendar', 'events', () => collectEvents(opts.cfg, opts.reader, opts.tz, opts.now, own))
+      : events;
+  };
+  const familyFor = (handle: string): Section[] => [
+    ...(d.family_plan?.audience.includes(handle) ? familyPlan : []),
+    ...(shopping && d.shopping!.audience.includes(handle) ? [shopping] : []),
+  ];
   const todayBoards: Board[] = [];
-  const shared = d.audience.today.filter((h) => !d.tasks?.[h]);
-  if (shared.length) {
-    todayBoards.push({
-      id: 'today',
-      title: 'Today',
-      audience: shared,
-      sections: d.weather ? [weather, events] : [events],
-    });
-  }
-  for (const handle of d.audience.today.filter((h) => d.tasks?.[h])) {
-    const tasks = await guard('tasks', 'Due and overdue', 'rows', () =>
-      collectTasks(d.tasks![handle]!, listNames, opts.bridges ?? null, opts.tz, opts.now, fetchFn),
-    );
+  for (const handle of d.audience.today) {
+    const tasks = d.tasks?.[handle]
+      ? [
+          await guard('tasks', 'Due and overdue', 'rows', () =>
+            collectTasks(d.tasks![handle]!, listNames, opts.bridges ?? null, opts.tz, opts.now, fetchFn),
+          ),
+        ]
+      : [];
     const packages = opts.mailReviewDir
       ? mailReviewDirs(opts.mailReviewDir)
           .map((d) => collectPackages(d))
@@ -920,7 +1063,7 @@ export async function buildDashboard(opts: {
       id: 'today',
       title: 'Today',
       audience: [handle],
-      sections: d.weather ? [weather, ...packages, tasks, events] : [...packages, tasks, events],
+      sections: [...(d.weather ? [weather] : []), ...packages, ...tasks, ...familyFor(handle), await eventsFor(handle)],
     });
   }
   const mailReview = opts.mailReviewDir ? collectMailReview(opts.mailReviewDir, opts.now) : null;
@@ -988,6 +1131,7 @@ async function main(): Promise<void> {
     ncl: nclRunner(root),
     readLog: groupLogReader(path.join(root, 'groups')),
     mailReviewDir: path.join(root, 'data', 'mail-review'),
+    projectRoot: root,
     alertsDb: process.env.ALERTS_DB ?? path.join(os.homedir(), 'nanoclaw-alerts', 'alerts.db'),
     previous: readPrevious(out),
     bridges: readBridges(cfg),
