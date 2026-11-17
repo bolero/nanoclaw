@@ -791,8 +791,28 @@ export function collectPackages(dir: string): { handle: string | null; section: 
   };
 }
 
-/** Health of the local mail review trial, for Ops. */
-export function collectMailReview(dir: string, now = new Date()): Section | null {
+/** Per-person mail review folders (data/mail-review/<handle>/), plus the original single folder. */
+export function mailReviewDirs(root: string): string[] {
+  const out: string[] = [];
+  if (fs.existsSync(path.join(root, 'health.json')) || fs.existsSync(path.join(root, 'packages.json'))) out.push(root);
+  try {
+    for (const e of fs.readdirSync(root, { withFileTypes: true }))
+      if (e.isDirectory() && !e.name.startsWith('.')) out.push(path.join(root, e.name));
+  } catch {
+    /* no folder yet */
+  }
+  return out;
+}
+
+/** Health of the local mail review trial, for Ops: one row per reviewed mailbox. */
+export function collectMailReview(root: string, now = new Date()): Section | null {
+  const rows = mailReviewDirs(root)
+    .map((d) => mailReviewRow(d, now))
+    .filter((r): r is Row => r !== null);
+  return rows.length ? { id: 'mail-review', kind: 'rows', title: 'Local mail review (trial)', rows } : null;
+}
+
+function mailReviewRow(dir: string, now: Date): Row | null {
   let h: Record<string, unknown>;
   try {
     h = JSON.parse(fs.readFileSync(path.join(dir, 'health.json'), 'utf8'));
@@ -803,20 +823,13 @@ export function collectMailReview(dir: string, now = new Date()): Section | null
   const staleMin = lastOk ? (now.getTime() - lastOk) / 60000 : Infinity;
   const status: RowStatus = staleMin > 120 ? 'bad' : h.ok ? 'ok' : 'warn';
   return {
-    id: 'mail-review',
-    kind: 'rows',
-    title: 'Local mail review (trial)',
-    rows: [
-      {
-        title: `${h.reviewedToday ?? 0} emails reviewed today · ${h.packages ?? 0} packages`,
-        detail: [
-          h.avgSeconds ? `${h.avgSeconds} s per email on ${h.model}` : `model ${h.model}`,
-          h.ok ? 'last run OK' : `last run: ${String(h.error ?? 'error').slice(0, 100)}`,
-        ].join(' · '),
-        status,
-        ...(typeof h.lastRun === 'string' ? { time: h.lastRun } : {}),
-      },
-    ],
+    title: `${typeof h.handle === 'string' ? `${h.handle}: ` : ''}${h.reviewedToday ?? 0} emails reviewed today · ${h.packages ?? 0} packages`,
+    detail: [
+      h.avgSeconds ? `${h.avgSeconds} s per email on ${h.model}` : `model ${h.model}`,
+      h.ok ? 'last run OK' : `last run: ${String(h.error ?? 'error').slice(0, 100)}`,
+    ].join(' · '),
+    status,
+    ...(typeof h.lastRun === 'string' ? { time: h.lastRun } : {}),
   };
 }
 
@@ -891,8 +904,13 @@ export async function buildDashboard(opts: {
     const tasks = await guard('tasks', 'Due and overdue', 'rows', () =>
       collectTasks(d.tasks![handle]!, listNames, opts.bridges ?? null, opts.tz, opts.now, fetchFn),
     );
-    const pk = opts.mailReviewDir ? collectPackages(opts.mailReviewDir) : { handle: null, section: null };
-    const packages = pk.section && pk.handle === handle ? [pk.section] : [];
+    const packages = opts.mailReviewDir
+      ? mailReviewDirs(opts.mailReviewDir)
+          .map((d) => collectPackages(d))
+          .filter((pk) => pk.section && pk.handle === handle)
+          .map((pk) => pk.section!)
+          .slice(0, 1)
+      : [];
     todayBoards.push({
       id: 'today',
       title: 'Today',

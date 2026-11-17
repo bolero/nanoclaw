@@ -488,3 +488,35 @@ describe('suggestion feedback section', () => {
     ]);
   });
 });
+
+describe('mail review per person', () => {
+  it('shows one Ops row per mailbox and each person only their own packages', async () => {
+    const fs = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
+    const { collectMailReview, mailReviewDirs, collectPackages } = await import('./dashboard-feed.js');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mr2-'));
+    const now = new Date('2026-11-16T20:00:00Z');
+    for (const h of ['alex', 'sam']) {
+      fs.mkdirSync(path.join(root, h));
+      fs.writeFileSync(
+        path.join(root, h, 'health.json'),
+        JSON.stringify({ handle: h, ok: true, lastOk: now.toISOString(), reviewedToday: 3, packages: 1, model: 'm' }),
+      );
+      fs.writeFileSync(
+        path.join(root, h, 'packages.json'),
+        JSON.stringify({ handle: h, packages: [{ item: `${h} box`, status: 'shipped' }] }),
+      );
+    }
+    const s = collectMailReview(root, now);
+    expect(s?.kind === 'rows' && s.rows?.map((r) => r.title)).toEqual([
+      'alex: 3 emails reviewed today · 1 packages',
+      'sam: 3 emails reviewed today · 1 packages',
+    ]);
+    const mine = mailReviewDirs(root)
+      .map((d) => collectPackages(d))
+      .filter((p) => p.handle === 'sam');
+    expect(mine).toHaveLength(1);
+    expect(JSON.stringify(mine[0].section)).toContain('sam box');
+  });
+});

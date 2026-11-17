@@ -694,7 +694,9 @@ esac
   it('the guide tells a gateway older than 1.42, one that reports unknown included, to move to 1.42.0 first', () => {
     const pre = guide.indexOf('GW="$GW" sh .claude/skills/add-onecli/scripts/pre-upgrade-check.sh');
     const after = guide.slice(pre, guide.indexOf(`${CHECK}\n`));
-    expect(after).toMatch(/older than 1\.42[^\n]*`unknown`[^\n]*1\.24 to 1\.38[^\n]*Dial check[^\n]*move the gateway to 1\.42\.0/);
+    expect(after).toMatch(
+      /older than 1\.42[^\n]*`unknown`[^\n]*1\.24 to 1\.38[^\n]*Dial check[^\n]*move the gateway to 1\.42\.0/,
+    );
   });
 
   it('deletes on a 1.42 project whose rules were never cut over (published default has no id): the old rules decide', () => {

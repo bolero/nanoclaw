@@ -12,11 +12,18 @@
  *   pnpm exec tsx scripts/mail-review-local.ts            # one run (timer: every 15 min)
  *   pnpm exec tsx scripts/mail-review-local.ts --dry-run  # classify, post nothing, keep no state
  *
+ * Several mailboxes (people) are reviewed one after another in a single run, so the local model
+ * only ever sees one request at a time; the runner holds a lock so runs never overlap.
+ * Profiles come from ~/.config/nanoclaw/mail-review.json:
+ *   {"profiles": [{"handle": "alex", "account": "personal", "bills_project": "[Bills]",
+ *                  "omnifocus_url": "...", "reminders_url": "...", "bridge_key_file": "..."}]}
+ * Without that file, one profile is built from the env below (the original single-mailbox setup).
+ *
  * Env (all optional): MAIL_REVIEW_ACCOUNT (personal), MAIL_REVIEW_QUERY, MAIL_REVIEW_OLLAMA
  * (http://localhost:11434), MAIL_REVIEW_MODEL (gemma4:26b-a4b), MAIL_REVIEW_NOTIFY (handle),
  * MAIL_REVIEW_BILLS_PROJECT ([Bills]), MAIL_REVIEW_OMNIFOCUS_URL, MAIL_REVIEW_REMINDERS_URL,
- * MAIL_REVIEW_DIGEST_HOUR (18), MAIL_REVIEW_MAX_PER_RUN (25).
- * State: data/mail-review/{state.json,packages.json,health.json}.
+ * MAIL_REVIEW_DIGEST_HOUR (18), MAIL_REVIEW_MAX_PER_RUN (25, per mailbox).
+ * State per person: data/mail-review/<handle>/{state.json,packages.json,health.json}.
  */
 import { execFile } from 'child_process';
 import fs from 'fs';
@@ -487,19 +494,106 @@ function writeJson(file: string, value: unknown): void {
   fs.renameSync(tmp, file);
 }
 
+export interface Profile {
+  handle: string;
+  account: string;
+  bills_project?: string;
+  omnifocus_url?: string;
+  reminders_url?: string;
+  /** Read-only bridge key for the bill check (defaults to the dashboard key). */
+  bridge_key_file?: string;
+  /** Legacy single-mailbox setup only: check bills against home.yaml's dashboard bridges. */
+  owner_bridges?: boolean;
+}
+
+/** The people whose mail is reviewed, in order. Invalid entries are skipped with a warning. */
+export function loadProfiles(file: string, env: NodeJS.ProcessEnv): Profile[] {
+  let raw: { profiles?: unknown[] } | null = null;
+  try {
+    raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    raw = null;
+  }
+  if (!raw) {
+    return env.MAIL_REVIEW_NOTIFY
+      ? [
+          {
+            handle: env.MAIL_REVIEW_NOTIFY,
+            account: env.MAIL_REVIEW_ACCOUNT ?? 'personal',
+            bills_project: env.MAIL_REVIEW_BILLS_PROJECT,
+            omnifocus_url: env.MAIL_REVIEW_OMNIFOCUS_URL,
+            reminders_url: env.MAIL_REVIEW_REMINDERS_URL,
+            owner_bridges: true,
+          },
+        ]
+      : [];
+  }
+  const out: Profile[] = [];
+  for (const p of raw.profiles ?? []) {
+    const o = p as Record<string, unknown>;
+    if (typeof o.handle !== 'string' || !/^[a-z0-9-]{1,32}$/.test(o.handle) || typeof o.account !== 'string') {
+      console.warn('mail-review: skipping invalid profile', JSON.stringify(p).slice(0, 120));
+      continue;
+    }
+    if (out.some((x) => x.handle === o.handle)) continue;
+    out.push({ ...(o as unknown as Profile), owner_bridges: false });
+  }
+  return out;
+}
+
+/** Move the original single-mailbox state into that person's folder (once). */
+export function migrateLegacyState(root: string, handle: string): void {
+  const dir = path.join(root, handle);
+  const legacy = path.join(root, 'packages.json');
+  if (fs.existsSync(dir) || !fs.existsSync(path.join(root, 'state.json'))) return;
+  let owner: string | null = null;
+  try {
+    owner = (JSON.parse(fs.readFileSync(legacy, 'utf8')) as { handle?: string }).handle ?? null;
+  } catch {
+    owner = null;
+  }
+  if (owner !== handle) return;
+  fs.mkdirSync(dir, { recursive: true });
+  for (const f of ['state.json', 'packages.json', 'health.json']) {
+    if (fs.existsSync(path.join(root, f))) fs.renameSync(path.join(root, f), path.join(dir, f));
+  }
+}
+
 async function main(): Promise<void> {
+  const env = process.env;
+  const root = path.join(process.cwd(), 'data', 'mail-review');
+  const profiles = loadProfiles(path.join(os.homedir(), '.config', 'nanoclaw', 'mail-review.json'), env);
+  if (profiles.length === 0) {
+    console.log('mail-review: no profiles configured');
+    return;
+  }
+  // One mailbox after another: the local model gets one request at a time.
+  let failed = 0;
+  for (const profile of profiles) {
+    migrateLegacyState(root, profile.handle);
+    try {
+      await runProfile(profile, path.join(root, profile.handle));
+    } catch (e) {
+      failed++;
+      console.error(`mail-review: ${profile.handle}:`, (e as Error).message);
+    }
+  }
+  if (failed === profiles.length) process.exit(1);
+}
+
+async function runProfile(profile: Profile, dir: string): Promise<void> {
   const dryRun = process.argv.includes('--dry-run');
   const env = process.env;
-  const account = env.MAIL_REVIEW_ACCOUNT ?? 'personal';
+  const account = profile.account;
   const query =
     env.MAIL_REVIEW_QUERY ??
     'newer_than:2d -in:spam -in:sent -in:chats -category:promotions -category:social -category:forums';
   const ollama = (env.MAIL_REVIEW_OLLAMA ?? 'http://localhost:11434').replace(/\/+$/, '');
   const model = env.MAIL_REVIEW_MODEL ?? 'gemma4:26b-a4b';
-  const handle = env.MAIL_REVIEW_NOTIFY;
-  const project = env.MAIL_REVIEW_BILLS_PROJECT ?? '[Bills]';
+  const handle = profile.handle;
+  const project = profile.bills_project ?? '[Bills]';
   const root = process.cwd();
-  const dir = path.join(root, 'data', 'mail-review');
+  fs.mkdirSync(dir, { recursive: true });
   const stateFile = path.join(dir, 'state.json');
   const pkgFile = path.join(dir, 'packages.json');
   const healthFile = path.join(dir, 'health.json');
@@ -508,10 +602,11 @@ async function main(): Promise<void> {
   const tokens = new GoogleTokens(() => cfg.google_accounts.map((a) => a.id));
   const token = () => tokens.token(account, 'gmail.readonly');
   const bridges = cfg.dashboard?.task_bridges ?? {};
-  const keyFile = path.join(os.homedir(), '.config', 'nanoclaw', 'dashboard-bridge.key');
+  const keyFile = profile.bridge_key_file ?? path.join(os.homedir(), '.config', 'nanoclaw', 'dashboard-bridge.key');
   const key = fs.existsSync(keyFile) ? fs.readFileSync(keyFile, 'utf8').trim() : '';
-  const ofUrl = env.MAIL_REVIEW_OMNIFOCUS_URL ?? bridges.omnifocus_url;
-  const remUrl = env.MAIL_REVIEW_REMINDERS_URL ?? bridges.reminders_url;
+  // Bills are checked only against that person's own task bridges (never someone else's).
+  const ofUrl = profile.omnifocus_url ?? (profile.owner_bridges ? bridges.omnifocus_url : undefined);
+  const remUrl = profile.reminders_url ?? (profile.owner_bridges ? bridges.reminders_url : undefined);
 
   const now = new Date();
   // First run: start from the last 24 hours, never the whole mailbox.
@@ -637,6 +732,7 @@ async function main(): Promise<void> {
       : null,
     packages: result?.packages.length ?? packages.length,
     model,
+    handle,
     runSeconds: +((Date.now() - started) / 1000).toFixed(1),
   };
   console.log(JSON.stringify(newHealth));

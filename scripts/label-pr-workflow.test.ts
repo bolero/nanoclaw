@@ -24,11 +24,9 @@ type ComputeLabels = (args: {
   currentLabels?: string[];
 }) => LabelDecision;
 
-type DecideCompliance = (args: {
-  body?: string | null;
-  add: string[];
-  currentLabels?: string[];
-}) => { state: 'success' | 'failure' | null };
+type DecideCompliance = (args: { body?: string | null; add: string[]; currentLabels?: string[] }) => {
+  state: 'success' | 'failure' | null;
+};
 
 type ShouldPostComplianceComment = (state: string | null, existingCommentBodies: Array<string | null>) => boolean;
 
@@ -39,10 +37,7 @@ interface ExtractedLogic {
 }
 
 function extractLogic(): ExtractedLogic {
-  const workflow = fs.readFileSync(
-    path.join(__dirname, '..', '.github', 'workflows', 'label-pr.yml'),
-    'utf8',
-  );
+  const workflow = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'label-pr.yml'), 'utf8');
   const start = workflow.indexOf('NANOCLAW-LABEL-LOGIC-START');
   const end = workflow.indexOf('NANOCLAW-LABEL-LOGIC-END');
   if (start === -1 || end === -1 || end <= start) {
@@ -81,9 +76,7 @@ const TEMPLATE_KINDS = ['kind/bug', 'kind/feature', 'kind/documentation', 'kind/
 const v2Body = (kinds: string[], opts: { skill?: boolean; notSkill?: boolean } = {}) =>
   V2 +
   '## Change kind\n' +
-  TEMPLATE_KINDS
-    .map((k) => `- [${kinds.includes(k) ? 'x' : ' '}] \`${k}\``)
-    .join('\n') +
+  TEMPLATE_KINDS.map((k) => `- [${kinds.includes(k) ? 'x' : ' '}] \`${k}\``).join('\n') +
   '\n## Skill delivery\n' +
   `- [${opts.notSkill ? 'x' : ' '}] Not a skill\n` +
   `- [${opts.skill ? 'x' : ' '}] Skill: apply/remove footprint and fresh-clone verification are described above\n`;
@@ -150,7 +143,7 @@ describe('v2 bodies — advisory title fallback (B1: never removes, never overru
     expect(res.remove).toEqual([]);
   });
 
-  it("maintainer reclassification survives a later edited event: fallback adds nothing when a managed kind is present", () => {
+  it('maintainer reclassification survives a later edited event: fallback adds nothing when a managed kind is present', () => {
     // PR titled fix:, no box checked; maintainer set kind/cleanup at triage.
     const res = computeLabels({
       body: v2Body([]),
@@ -181,7 +174,15 @@ describe('v2 bodies — advisory title fallback (B1: never removes, never overru
   });
 
   it('repo-convention prefixes ci/test/build/style/perf map to kind/cleanup, chore/refactor too', () => {
-    for (const title of ['ci(labels): x', 'test: y', 'build(deps): z', 'style: w', 'perf: v', 'chore(deps): u', 'refactor: t']) {
+    for (const title of [
+      'ci(labels): x',
+      'test: y',
+      'build(deps): z',
+      'style: w',
+      'perf: v',
+      'chore(deps): u',
+      'refactor: t',
+    ]) {
       const res = computeLabels({ body: v2Body([]), title, author: FORK_AUTHOR, currentLabels: [] });
       expect(res.add, title).toContain('kind/cleanup');
     }
@@ -209,9 +210,7 @@ describe('v2 bodies — token robustness', () => {
 
   it('checkbox tokens must start the line: inline and indented mentions do not register', () => {
     const body =
-      V2 +
-      'see - [x] `kind/bug` discussed inline\n' +
-      '  - [x] `kind/feature` (indented, quoted from another PR)\n';
+      V2 + 'see - [x] `kind/bug` discussed inline\n' + '  - [x] `kind/feature` (indented, quoted from another PR)\n';
     const res = computeLabels({ body, title: 'Update stuff', author: FORK_AUTHOR });
     expect(res.add.filter((l) => l.startsWith('kind/'))).toEqual([]);
   });
@@ -249,9 +248,7 @@ describe('v2 bodies — token robustness', () => {
   });
 
   it('the Validation test-coverage checkbox carries no label semantics', () => {
-    const validation =
-      '## Validation\n' +
-      '- [x] Tests cover the changed behavior (or Validation says why not)\n';
+    const validation = '## Validation\n' + '- [x] Tests cover the changed behavior (or Validation says why not)\n';
     const withKind = computeLabels({ body: v2Body(['kind/bug']) + validation, title: 'x', author: FORK_AUTHOR });
     expect(withKind.add.filter((l) => l.startsWith('kind/'))).toEqual(['kind/bug']);
     expect(withKind.add).not.toContain('delivery/skill');
@@ -273,11 +270,25 @@ describe('v2 bodies — token robustness', () => {
 
   it('never emits a label outside the fixed vocabularies', () => {
     const KNOWN = new Set([
-      'kind/bug', 'kind/feature', 'kind/documentation', 'kind/cleanup', 'kind/hardening',
-      'PR: Fix', 'PR: Feature', 'PR: Docs', 'PR: Refactor', 'PR: Skill',
-      'delivery/skill', 'follows-guidelines', 'core-team',
+      'kind/bug',
+      'kind/feature',
+      'kind/documentation',
+      'kind/cleanup',
+      'kind/hardening',
+      'PR: Fix',
+      'PR: Feature',
+      'PR: Docs',
+      'PR: Refactor',
+      'PR: Skill',
+      'delivery/skill',
+      'follows-guidelines',
+      'core-team',
     ]);
-    for (const body of [v2Body(['kind/bug'], { skill: true }), v2Body([]), v2Body(['kind/hardening'], { notSkill: true })]) {
+    for (const body of [
+      v2Body(['kind/bug'], { skill: true }),
+      v2Body([]),
+      v2Body(['kind/hardening'], { notSkill: true }),
+    ]) {
       const res = computeLabels({ body, title: 'feat!: breaking', author: 'glifocat' });
       for (const label of [...res.add, ...res.remove]) {
         expect(KNOWN.has(label), label).toBe(true);
@@ -288,7 +299,11 @@ describe('v2 bodies — token robustness', () => {
 
 describe('v1 bodies (frozen pre-v2 behavior)', () => {
   it('checkbox substring adds both vocabularies, add-only', () => {
-    const res = computeLabels({ body: '<!-- contributing-guide: v1 -->\n- [x] **Fix** - bug fix', title: 'x', author: FORK_AUTHOR });
+    const res = computeLabels({
+      body: '<!-- contributing-guide: v1 -->\n- [x] **Fix** - bug fix',
+      title: 'x',
+      author: FORK_AUTHOR,
+    });
     expect(res.add).toContain('PR: Fix');
     expect(res.add).toContain('kind/bug');
     expect(res.add).toContain('follows-guidelines');
@@ -383,7 +398,10 @@ describe('template-compliance (report-only)', () => {
         author: FORK_AUTHOR,
         currentLabels: [],
       });
-      expect(res.add.filter((l) => l.startsWith('kind/')), `prefix ${prefix}: promised a kind, got none`).toHaveLength(1);
+      expect(
+        res.add.filter((l) => l.startsWith('kind/')),
+        `prefix ${prefix}: promised a kind, got none`,
+      ).toHaveLength(1);
     }
   });
 });

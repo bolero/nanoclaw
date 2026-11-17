@@ -184,3 +184,46 @@ describe('mail-review-local run', () => {
     ).toMatchObject({ title: 's' });
   });
 });
+
+describe('mail-review-local profiles', () => {
+  it('reads profiles, skips bad ones, and never lends the owner bridges to a configured person', async () => {
+    const fs = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
+    const { loadProfiles } = await import('./mail-review-local.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mrp-'));
+    const file = path.join(dir, 'mail-review.json');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        profiles: [
+          { handle: 'alex', account: 'personal', omnifocus_url: 'http://of' },
+          { handle: 'Bad Handle', account: 'x' },
+          { handle: 'sam', account: 'sam-mail' },
+          { handle: 'alex', account: 'dup' },
+        ],
+      }),
+    );
+    const p = loadProfiles(file, {});
+    expect(p.map((x) => x.handle)).toEqual(['alex', 'sam']);
+    expect(p.every((x) => x.owner_bridges === false)).toBe(true);
+    const legacy = loadProfiles(path.join(dir, 'missing.json'), { MAIL_REVIEW_NOTIFY: 'alex' });
+    expect(legacy).toEqual([expect.objectContaining({ handle: 'alex', account: 'personal', owner_bridges: true })]);
+    expect(loadProfiles(path.join(dir, 'missing.json'), {})).toEqual([]);
+  });
+
+  it('moves the original single-mailbox state into its owner folder once', async () => {
+    const fs = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
+    const { migrateLegacyState } = await import('./mail-review-local.js');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mrm-'));
+    fs.writeFileSync(path.join(root, 'state.json'), '{"since":0,"done":{}}');
+    fs.writeFileSync(path.join(root, 'packages.json'), '{"handle":"alex","packages":[]}');
+    migrateLegacyState(root, 'sam');
+    expect(fs.existsSync(path.join(root, 'sam'))).toBe(false);
+    migrateLegacyState(root, 'alex');
+    expect(fs.existsSync(path.join(root, 'alex', 'state.json'))).toBe(true);
+    expect(fs.existsSync(path.join(root, 'state.json'))).toBe(false);
+  });
+});

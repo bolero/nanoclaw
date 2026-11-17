@@ -52,7 +52,11 @@ function exec(command: string): string {
 }
 
 function copySkill(source: string, destination: string, branch = 'channels'): void {
-  put(skill, 'SKILL.md', `# Copy fixture\n\n\`\`\`nc:copy from-branch:${branch}\n${source} -> ${destination}\n\`\`\`\n`);
+  put(
+    skill,
+    'SKILL.md',
+    `# Copy fixture\n\n\`\`\`nc:copy from-branch:${branch}\n${source} -> ${destination}\n\`\`\`\n`,
+  );
 }
 
 function singleBranchClone(): void {
