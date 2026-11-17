@@ -318,8 +318,7 @@ export class AppStore {
       const row = this.db
         .prepare('SELECT user_handle, display_name, expires_at, used_at FROM pair_codes WHERE code_hash = ?')
         .get(codeHash) as
-        | { user_handle: string; display_name: string | null; expires_at: string; used_at: string | null }
-        | undefined;
+        { user_handle: string; display_name: string | null; expires_at: string; used_at: string | null } | undefined;
       if (!row || row.used_at || Date.parse(row.expires_at) < now) return null;
       const nowIso = new Date(now).toISOString();
       this.db.prepare('UPDATE pair_codes SET used_at = ? WHERE code_hash = ?').run(nowIso, codeHash);
@@ -357,8 +356,7 @@ export class AppStore {
 
   authenticate(token: string): Device | null {
     const row = this.db.prepare('SELECT * FROM devices WHERE token_hash = ?').get(hashSecret(token)) as
-      | DeviceRow
-      | undefined;
+      DeviceRow | undefined;
     if (!row || row.revoked_at) return null;
     return toDevice(row);
   }
@@ -677,8 +675,7 @@ export class AppStore {
 
   getFile(id: string): (FileRef & { userHandle: string; path: string }) | null {
     const row = this.db.prepare('SELECT * FROM files WHERE id = ?').get(id) as
-      | { id: string; user_handle: string; filename: string; mime_type: string; size: number }
-      | undefined;
+      { id: string; user_handle: string; filename: string; mime_type: string; size: number } | undefined;
     if (!row) return null;
     return {
       id: row.id,
@@ -694,8 +691,7 @@ export class AppStore {
 
   getAgentMeta(folder: string): AgentMeta | null {
     const row = this.db.prepare('SELECT * FROM agent_meta WHERE folder = ?').get(folder) as
-      | { folder: string; color: string | null; avatar_file: string | null; updated_at: string }
-      | undefined;
+      { folder: string; color: string | null; avatar_file: string | null; updated_at: string } | undefined;
     return row
       ? { folder: row.folder, color: row.color, avatarFile: row.avatar_file, updatedAt: row.updated_at }
       : null;
