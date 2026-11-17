@@ -8,4 +8,4 @@
 
 import './cli.js';
 import './telegram.js';
-import './app.js';
+import './app.js'; // nanoclaw:local (in-tree channel, no add-* skill)

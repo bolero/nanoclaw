@@ -77,9 +77,14 @@ function tryGit(root: string, args: string[]): string {
   }
 }
 
+/**
+ * Skill-installed barrel imports. An import marked `// nanoclaw:local` is an in-tree module the
+ * fork maintains itself (no `add-*` skill), so it is never refreshed and never reported missing.
+ */
 function readImports(file: string): string[] {
   if (!fs.existsSync(file)) return [];
   const names: string[] = [];
+  // A trailing comment (including `// nanoclaw:local`) ends the match, so marked lines are skipped.
   const re = /^\s*import\s+['"]\.\/([a-z0-9-]+)\.js['"];?\s*$/gm;
   const source = fs.readFileSync(file, 'utf8');
   for (const match of source.matchAll(re)) names.push(match[1]);

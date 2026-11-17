@@ -51,6 +51,16 @@ describe('installed skill detection', () => {
     ]);
   });
 
+  it('skips in-tree channels marked nanoclaw:local', () => {
+    const root = temp('nanoclaw-skills-detect-local-');
+    write(
+      root,
+      'src/channels/index.ts',
+      "import './cli.js';\nimport './slack.js';\nimport './home.js'; // nanoclaw:local (in-tree channel)\n",
+    );
+    expect(detectInstalledSkills(root)).toEqual([{ name: 'slack', skillName: 'add-slack', kind: 'channel' }]);
+  });
+
   it('attributes a companion import to the skill that appends it', () => {
     const root = temp('nanoclaw-skills-detect-companion-');
     // What /add-slack actually installs: the adapter plus its a2a guard, both
