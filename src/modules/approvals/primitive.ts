@@ -27,6 +27,7 @@ import {
   normalizeOptions,
   type RawOption,
 } from '../../channels/ask-question.js';
+import { APPROVAL_CHANNEL } from '../../config.js'; // nanoclaw:local
 import { getMessagingGroup } from '../../db/messaging-groups.js';
 import { createPendingApproval, deletePendingApproval, getSession } from '../../db/sessions.js';
 import { getDeliveryAdapter } from '../../delivery.js';
@@ -167,12 +168,24 @@ export async function pickApprover(agentGroupId: string | null): Promise<string[
  * Tie-break: prefer approvers reachable on the same channel kind as the
  * origin; else first in list. A same-channel origin resolves through its
  * exact adapter instance.
+ *
+ * nanoclaw:local — a configured approval channel (NANOCLAW_APPROVAL_CHANNEL,
+ * e.g. `app`) is tried before the origin tie-break, so an owner who has both
+ * Telegram and the app gets every card in the app.
  */
 export async function pickApprovalDelivery(
   approvers: string[],
   originChannelType: string,
   originInstance?: string,
+  preferredChannel: string = APPROVAL_CHANNEL,
 ): Promise<{ userId: string; messagingGroup: MessagingGroup } | null> {
+  if (preferredChannel && preferredChannel !== originChannelType) {
+    for (const userId of approvers) {
+      if (channelTypeOf(userId) !== preferredChannel) continue;
+      const mg = await ensureUserDm(userId);
+      if (mg) return { userId, messagingGroup: mg };
+    }
+  }
   if (originChannelType) {
     for (const userId of approvers) {
       if (channelTypeOf(userId) !== originChannelType) continue;

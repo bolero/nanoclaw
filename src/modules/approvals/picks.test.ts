@@ -141,6 +141,30 @@ describe('pickApprovalDelivery', () => {
     expect(result?.userId).toBe('telegram:111');
   });
 
+  it('tries the configured approval channel before the origin channel', async () => {
+    await mountMockAdapter('telegram');
+    await mountMockAdapter('app', async (h) => `app:${h}`);
+    await seedUser('telegram:111', 'telegram');
+    await seedUser('app:owner', 'app');
+
+    const preferred = await pickApprovalDelivery(['telegram:111', 'app:owner'], 'telegram', undefined, 'app');
+    expect(preferred?.userId).toBe('app:owner');
+    expect(preferred?.messagingGroup.platform_id).toBe('app:owner');
+    // Without the setting the origin tie-break still wins.
+    const upstream = await pickApprovalDelivery(['telegram:111', 'app:owner'], 'telegram', undefined, '');
+    expect(upstream?.userId).toBe('telegram:111');
+  });
+
+  it('keeps the origin tie-break when no approver is on the preferred channel', async () => {
+    await mountMockAdapter('telegram');
+    await mountMockAdapter('discord', async (h) => `dm-${h}`);
+    await seedUser('telegram:111', 'telegram');
+    await seedUser('discord:222', 'discord');
+
+    const result = await pickApprovalDelivery(['telegram:111', 'discord:222'], 'discord', undefined, 'app');
+    expect(result?.userId).toBe('discord:222');
+  });
+
   it('returns null when nobody is reachable', async () => {
     await seedUser('telegram:111', 'telegram');
     expect(await pickApprovalDelivery(['telegram:111'], 'telegram')).toBeNull();

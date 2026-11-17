@@ -23,6 +23,7 @@ const envConfig = readEnvFile([
   'WEBHOOK_HOST',
   'NANOCLAW_ABSOLUTE_CEILING_MS',
   'NANOCLAW_CLAIM_STUCK_MS',
+  'NANOCLAW_APPROVAL_CHANNEL', // nanoclaw:local
 ]);
 
 /**
@@ -48,6 +49,12 @@ export const DEFAULT_AGENT_PROVIDER = (
 // what every existing install gets. Unlike DEFAULT_AGENT_PROVIDER this is read
 // at spawn rather than stamped at creation, so changing it takes effect on the
 // next container start for every group that has not set one.
+/**
+ * nanoclaw:local — channel kind (e.g. `app`) that approval cards go to first,
+ * ahead of the origin-channel tie-break. Empty keeps upstream behavior.
+ */
+export const APPROVAL_CHANNEL = process.env.NANOCLAW_APPROVAL_CHANNEL || envConfig.NANOCLAW_APPROVAL_CHANNEL || '';
+
 export const DEFAULT_MODEL = process.env.NANOCLAW_DEFAULT_MODEL || envConfig.NANOCLAW_DEFAULT_MODEL || '';
 
 // Fast serving tier for every agent container: faster output at a higher
