@@ -353,7 +353,12 @@ export async function collectEvents(
       errors.push(`${id}: ${(e as Error).message}`);
     }
   }
-  return { ...section, days: bucketEvents(all, today, tz), ...(errors.length ? { error: errors.join('; ') } : {}) };
+  const titles = cfg.dashboard?.event_titles ?? {};
+  const shown = all.map((e) => {
+    const alias = titles[e.title.trim().toLowerCase()];
+    return alias ? { ...e, title: alias } : e;
+  });
+  return { ...section, days: bucketEvents(shown, today, tz), ...(errors.length ? { error: errors.join('; ') } : {}) };
 }
 
 // ---- Tasks (per person, read-only through the bridges) -----------------------------------

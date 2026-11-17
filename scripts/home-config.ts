@@ -100,6 +100,8 @@ export interface DashboardConfig {
   audience: { today: string[]; ops: string[] };
   /** Calendar ids (from `calendars`) shown on Today. */
   today_calendars: string[];
+  /** Event titles shown differently on Today, matched case-insensitively (e.g. "Blocked Time" -> "Work (busy)"). */
+  event_titles?: Record<string, string>;
   /** Gatus base URL for service health on Ops. */
   gatus_url?: string;
   /** Per app handle: whose OmniFocus / Reminders tasks show on that person's Today (read-only). */
@@ -396,7 +398,7 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
     const d = v.obj(
       top.dashboard,
       'dashboard',
-      ['audience', 'today_calendars', 'gatus_url', 'weather', 'tasks', 'task_bridges'],
+      ['audience', 'today_calendars', 'gatus_url', 'weather', 'tasks', 'task_bridges', 'event_titles'],
       ['audience', 'today_calendars'],
     );
     const au = v.obj(d.audience, 'dashboard.audience', ['today', 'ops']);
@@ -412,6 +414,14 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
       },
       today_calendars,
     };
+    if (d.event_titles !== undefined) {
+      const t = v.obj(d.event_titles, 'dashboard.event_titles', Object.keys((d.event_titles as object) ?? {}), []);
+      dashboard.event_titles = {};
+      for (const [from, to] of Object.entries(t)) {
+        const shown = v.str(to, `dashboard.event_titles.${from}`);
+        if (from.trim() && shown.trim()) dashboard.event_titles[from.trim().toLowerCase()] = shown.trim().slice(0, 80);
+      }
+    }
     if (d.gatus_url !== undefined) {
       dashboard.gatus_url = v.str(d.gatus_url, 'dashboard.gatus_url', /^https?:\/\/[^\s]+$/).replace(/\/+$/, '');
     }

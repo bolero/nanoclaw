@@ -520,3 +520,24 @@ describe('mail review per person', () => {
     expect(JSON.stringify(mine[0].section)).toContain('sam box');
   });
 });
+
+describe('event title aliases', () => {
+  it('shows configured titles on Today, case-insensitively', async () => {
+    const { collectEvents } = await import('./dashboard-feed.js');
+    const withAlias = parseHomeConfig(
+      `version: 1\nagents: [main]\ngoogle_accounts:\n  - {id: fam, address: fam@example.com, scopes: [calendar.events.owned]}\nmailboxes: []\ncalendars:\n  - {id: family, account: fam, calendar: Family, access: read, used_by: [main]}\nreminders: {unrestricted: [], lists: []}\nomnifocus: {used_by: []}\nnotes: {unrestricted: [], read_all: [], folders: []}\ndestinations: {}\npersonal_watch: []\nschedule: {quiet_hours: "21:00-07:00", brief_time: "19:00", stale_days: 21, nudge_cap: 3}\ndashboard: {audience: {today: [a], ops: [a]}, today_calendars: [family], event_titles: {"Blocked Time": "Work (busy)"}}\n`,
+    );
+    const now = new Date('2026-11-16T16:00:00Z');
+    const ev = (title: string) => ({
+      title,
+      start: '2026-11-16T18:00:00Z',
+      end: '2026-11-16T19:00:00Z',
+      allDay: false,
+      calendar: 'family',
+    });
+    const reader = { events: async () => [ev('blocked time'), ev('Ballet')] } as unknown as CalendarReader;
+    const s = await collectEvents(withAlias, reader, 'America/Los_Angeles', now);
+    const titles = s.kind === 'events' ? s.days!.flatMap((d) => d.events.map((e) => e.title)) : [];
+    expect(titles.sort()).toEqual(['Ballet', 'Work (busy)']);
+  });
+});
