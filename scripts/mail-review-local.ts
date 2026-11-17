@@ -257,23 +257,117 @@ export interface PackageEntry {
   item?: string;
   carrier?: string;
   tracking?: string;
+  /** Order number, so the order, shipped and delivered mails for one order become one row. */
+  order?: string;
   eta?: string;
   status?: Review['package_status'];
   summary: string;
   seenAt: string;
 }
 
-/** Merge a package update (same tracking number replaces), drop delivered ones after 2 days and stale ones after 10. */
+/** Order numbers a regex finds reliably (Amazon 3-7-7, else "order #..."). */
+export function findOrder(text: string): string | undefined {
+  const amazon = text.match(/\b\d{3}-\d{7}-\d{7}\b/);
+  if (amazon) return amazon[0];
+  const m = text.match(/\border\s*(?:number|no\.?|#|:)?\s*#?\s*([A-Za-z]{0,4}\d[\dA-Za-z-]{5,})/i);
+  return m ? m[1] : undefined;
+}
+
+/** The local model often leaves package_status out; read it from the subject and summary instead. */
+export function inferStatus(text: string): PackageEntry['status'] {
+  const t = text.toLowerCase();
+  if (/\b(delivered|was delivered|marked as completed|order completed|picked up)\b/.test(t)) return 'delivered';
+  if (/out for delivery/.test(t)) return 'out_for_delivery';
+  if (/\b(delay(ed)?|exception|running late|unable to deliver)\b/.test(t)) return 'delayed';
+  if (/\b(shipped|on (the|its) way|in transit|dispatched|arriving|shipment)\b/.test(t)) return 'shipped';
+  if (/\b(order (confirmed|placed|received)|confirmed|thanks for your order|ordered)\b/.test(t)) return 'ordered';
+  return undefined;
+}
+
+const VAGUE_ITEM = /^(not specified|unknown|n\/a|none|package|item|items|your order)$/i;
+const itemWords = (s?: string) =>
+  new Set(
+    (s ?? '')
+      .toLowerCase()
+      .replace(/\b\d+ items?\b/g, ' ')
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 2 && !['and', 'the', 'for', 'with'].includes(w)),
+  );
+const sender = (s: string) => s.toLowerCase().replace(/[^a-z]/g, '').replace(/(tracking|orders?|shipping|noreply|com)$/g, '');
+
+/** True when two entries describe the same shipment or order. */
+export function samePackage(a: PackageEntry, b: PackageEntry): boolean {
+  if (a.tracking && b.tracking) return a.tracking === b.tracking;
+  if (a.order && b.order) return a.order === b.order;
+  if (a.tracking && b.tracking === undefined && b.summary.includes(a.tracking)) return true;
+  if (b.tracking && a.tracking === undefined && a.summary.includes(b.tracking)) return true;
+  if (sender(a.from) !== sender(b.from)) return false;
+  // Same sender, no shared ids: merge only when the item names match closely.
+  const x = itemWords(a.item);
+  const y = itemWords(b.item);
+  if (x.size === 0 || y.size === 0) return false;
+  const shared = [...x].filter((w) => y.has(w)).length;
+  return shared / Math.min(x.size, y.size) >= 0.6;
+}
+
+const better = (a?: string, b?: string) => {
+  const ok = (v?: string) => (v && !VAGUE_ITEM.test(v.trim()) ? v : undefined);
+  const va = ok(a);
+  const vb = ok(b);
+  if (!va) return vb;
+  if (!vb) return va;
+  // Different items in one order (split shipments): keep both names.
+  const x = itemWords(va);
+  const y = itemWords(vb);
+  const shared = [...x].filter((w) => y.has(w)).length;
+  if (x.size && y.size && shared / Math.min(x.size, y.size) < 0.5) return `${va}, ${vb}`.slice(0, 90);
+  return vb.length > va.length ? vb : va;
+};
+
+/** Fold a later update into an earlier entry: newest status and ETA win, ids and the clearest item name are kept. */
+function merge(old: PackageEntry, add: PackageEntry): PackageEntry {
+  return {
+    ...old,
+    ...add,
+    item: better(old.item, add.item),
+    carrier: add.carrier ?? old.carrier,
+    tracking: add.tracking ?? old.tracking,
+    order: add.order ?? old.order,
+    eta: add.eta ?? old.eta,
+    status: add.status ?? old.status,
+  };
+}
+
+/** Fill in status and order from the summary when the model left them out. */
+export function normalizePackage(p: PackageEntry): PackageEntry {
+  const item = p.item && VAGUE_ITEM.test(p.item.trim()) ? undefined : p.item;
+  return {
+    ...p,
+    item,
+    order: p.order ?? findOrder(p.summary),
+    status: p.status ?? inferStatus(p.summary),
+  };
+}
+
+/**
+ * Merge a package update into the list: the same tracking number, order number, or (same sender)
+ * item name updates one row instead of adding another. Existing rows are re-merged too, so older
+ * duplicates collapse. Delivered ones drop after 2 days, anything else after 10.
+ */
 export function updatePackages(list: PackageEntry[], add: PackageEntry | null, now: Date): PackageEntry[] {
-  let out = [...list];
-  if (add) {
-    const i = add.tracking ? out.findIndex((p) => p.tracking === add.tracking) : -1;
-    if (i >= 0) out[i] = { ...out[i], ...add };
-    else out.push(add);
+  const all = [...list, ...(add ? [add] : [])]
+    .map(normalizePackage)
+    .sort((a, b) => Date.parse(a.seenAt) - Date.parse(b.seenAt));
+  let out: PackageEntry[] = [];
+  for (const p of all) {
+    const i = out.findIndex((q) => samePackage(q, p));
+    if (i >= 0) out[i] = merge(out[i], p);
+    else out.push(p);
   }
   const age = (p: PackageEntry) => (now.getTime() - Date.parse(p.seenAt)) / 86400000;
   out = out.filter((p) => (p.status === 'delivered' ? age(p) < 2 : age(p) < 10));
-  return out.sort((a, b) => (a.eta ?? '9999').localeCompare(b.eta ?? '9999'));
+  const rank = (p: PackageEntry) => (p.status === 'delivered' ? 1 : 0);
+  return out.sort((a, b) => rank(a) - rank(b) || (a.eta ?? '9999').localeCompare(b.eta ?? '9999'));
 }
 
 // ---------- run ----------
@@ -379,8 +473,9 @@ export async function runOnce(
           item: review.item,
           carrier: review.carrier,
           tracking: review.tracking,
+          order: findOrder(`${mail.subject}\n${review.summary}\n${clean}`),
           eta: review.eta,
-          status: review.package_status,
+          status: review.package_status ?? inferStatus(`${mail.subject}\n${review.summary}`),
           summary: review.summary,
           seenAt: now.toISOString(),
         },

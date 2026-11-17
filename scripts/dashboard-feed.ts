@@ -783,7 +783,7 @@ export function collectPackages(dir: string): { handle: string | null; section: 
     delayed: 'Delayed',
   };
   const rows: Row[] = list.map((p) => ({
-    title: `${p.item ?? 'Package'} · ${p.from ?? ''}`.slice(0, 80),
+    title: `${p.item && !/^not specified$/i.test(p.item) ? p.item : p.order ? `Order ${p.order}` : 'Package'} · ${p.from ?? ''}`.slice(0, 80),
     detail: [label[p.status ?? ''] ?? 'In transit', p.carrier, p.eta ? `arrives ${p.eta}` : undefined]
       .filter(Boolean)
       .join(' · '),

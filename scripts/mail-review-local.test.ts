@@ -12,6 +12,8 @@ import {
   type State,
   suggestionText,
   updatePackages,
+  findOrder,
+  inferStatus,
 } from './mail-review-local.js';
 
 const NOW = new Date('2026-11-16T19:30:00Z'); // 11:30 PST
@@ -87,6 +89,42 @@ describe('mail-review-local model contract', () => {
     expect(list[0].status).toBe('delivered');
     const later = new Date(NOW.getTime() + 3 * 86400000);
     expect(updatePackages(list, null, later)).toHaveLength(0);
+  });
+
+  it('collapses the order, shipped and delivered mails for one order', () => {
+    const at = (h: number) => new Date(NOW.getTime() + h * 3600000).toISOString();
+    const mk = (id: string, p: Partial<PackageEntry>): PackageEntry => ({ messageId: id, from: 'Amazon.com', summary: '', seenAt: at(0), ...p });
+    const list = updatePackages(
+      [
+        mk('1', { item: 'Coffee, Oral Care', summary: 'Amazon order #114-2254218-7062650: Coffee, Oral Care. Total: 34.58 USD.' }),
+        mk('2', { item: 'Oral Care', summary: 'Amazon shipped 1 item (Oral Care). Order #114-2254218-7062650.', seenAt: at(1) }),
+        mk('3', { item: '2 items (Industrial & Scientific)', summary: 'Amazon order #114-8827510-2477833 shipped.' }),
+        mk('4', { item: '2 items: Industrial & Scientific', summary: '2 items from Amazon delivered today to San Jose, CA.', seenAt: at(2) }),
+        mk('5', { item: 'Industrial & Scientific', summary: 'Amazon shipment, Order #114-5640576-9672254.' }),
+        mk('6', { from: 'AliExpress', item: 'not specified', summary: 'AliExpress order 8215391793057999 ($11.30) will be marked as completed soon.' }),
+        mk('7', { from: 'Bambu Lab', item: 'PLA Matte filaments and Bambu Reusable Spools', summary: 'Bambu Lab order us798718556266119168 confirmed.' }),
+        mk('8', { from: 'Bambu Lab', item: 'PLA Matte refills and spools', summary: 'Bambu Lab shipment is out for delivery via Ontrac. Tracking: D10017876271271.', seenAt: at(3) }),
+      ],
+      null,
+      NOW,
+    );
+    expect(list).toHaveLength(5);
+    const coffee = list.find((p) => p.order === '114-2254218-7062650')!;
+    expect(coffee.item).toBe('Coffee, Oral Care');
+    expect(coffee.status).toBe('shipped');
+    expect(list.find((p) => p.messageId === '4')?.status).toBe('delivered');
+    expect(list.find((p) => p.from === 'AliExpress')?.item).toBeUndefined();
+    expect(list.find((p) => p.from === 'Bambu Lab')?.status).toBe('out_for_delivery');
+    expect(list.at(-1)?.status).toBe('delivered');
+  });
+
+  it('reads order numbers and status from text', () => {
+    expect(findOrder('Lands\' End order #6135349-1: 2x jackets')).toBe('6135349-1');
+    expect(findOrder('Order #114-0763144-7905816')).toBe('114-0763144-7905816');
+    expect(findOrder('order now and save')).toBeUndefined();
+    expect(inferStatus('Luggage delivered today to San Jose')).toBe('delivered');
+    expect(inferStatus('is out for delivery via Ontrac')).toBe('out_for_delivery');
+    expect(inferStatus('Arriving Thursday')).toBe('shipped');
   });
 });
 
