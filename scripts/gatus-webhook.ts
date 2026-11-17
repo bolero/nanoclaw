@@ -17,7 +17,7 @@
  *   REPEAT_SUPPRESS_MIN  drop repeat "triggered" alerts per endpoint (default 30)
  *   RESOLVE_DELAY_SEC    hold "resolved" this long; cancelled if it re-triggers (default 90)
  *
- * Auth header: `X-Webhook-Secret` or `X-Gitlab-Token` (Hermes-compatible).
+ * Auth header: `X-Webhook-Secret` or `X-Gitlab-Token` (the latter for older Gatus configs).
  * Body (JSON): { "endpoint": "plex", "status"|"state": "triggered"|"resolved" (case-insensitive),
  *                "description": "...", "url": "..." }
  *
@@ -96,7 +96,7 @@ function safeEqual(a: string, b: string): boolean {
 
 async function handleInner(body: Record<string, unknown>): Promise<string> {
   const endpoint = String(body.endpoint ?? 'unknown').slice(0, 100);
-  // Accept `status` (ours) or `state` (Hermes-style body); Gatus sends TRIGGERED/RESOLVED by default.
+  // Accept `status` (ours) or `state` (Gatus custom-alert body); Gatus sends TRIGGERED/RESOLVED by default.
   const status = String(body.status ?? body.state ?? '').toLowerCase() === 'resolved' ? 'resolved' : 'triggered';
   const description = String(body.description ?? '').slice(0, 300);
   const url = String(body.url ?? '').slice(0, 300);
@@ -200,7 +200,7 @@ http
       return;
     }
     if (req.method !== 'POST' || req.url !== '/alert') return reply(404, 'not found');
-    // `X-Gitlab-Token` is accepted too so a Gatus config written for Hermes works unchanged.
+    // `X-Gitlab-Token` is accepted too so older Gatus configs keep working.
     const presented = String(req.headers['x-webhook-secret'] ?? req.headers['x-gitlab-token'] ?? '');
     if (!safeEqual(presented, SECRET)) return reply(401, 'unauthorized');
     let raw = '';
