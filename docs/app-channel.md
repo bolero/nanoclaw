@@ -93,3 +93,18 @@ the agent. `ncl app feedback [--days 7] [--user <handle>]` summarizes them with 
 dropped, stopped, dismissed, still open): counts per sender, the hit rate (useful ÷ rated), the share of items taken up,
 and the messages marked not useful. Agents may run it (resource `feedback`) and see only their own conversations, so a
 weekly review can drop what keeps missing. The dashboard collector adds a *Suggestions, last 7 days* section to Ops.
+
+## Dashboard boards
+
+`GET /v1/dashboard` returns the boards from the collector file (`scripts/dashboard-feed.ts`, configured by home.yaml
+`dashboard`, see `homelab/home.example.yaml`). Each board is `{id: today|ops, title, audience: [handle], sections}`;
+Today boards are per person. A section is one of:
+
+- `{id, kind: "weather", title, weather: {label, temperature, code, text, high, low, unit}}`
+- `{id, kind: "events", title, days: [{date, label, events: [{title, start, end, allDay, calendar, location?}]}]}`
+- `{id, kind: "rows", title, summary?, rows: [{title, detail?, status?: ok|warn|bad|info, time?}]}`
+
+Any section may carry `error` (a source failed; earlier data may be carried over). Section ids the app knows:
+Today `weather`, `events`, `tasks` (due and overdue), `packages`, `meals`, `drives` (activities and who drives;
+`warn` = a driver is missing), `shopping` (one row per list); Ops `services`, `alerts`, `approvals`, `tasks`
+(scheduled), `feedback`, `mail-review`. A client should show unknown `rows` sections as a plain list.

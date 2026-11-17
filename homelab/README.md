@@ -105,7 +105,11 @@ Give the mount only to a test group, never the group that reads outside messages
   `data/app-channel/dashboard.json`, which the app channel serves per audience. Run `homelab/run-dashboard-feed.sh`
   from a timer (systemd user `.service` with `Type=oneshot` + `.timer` with `OnUnitActiveSec=5min`).
 - **Agent tools** (`agent-tools/`): `nudges.ts` (Bun) — nudge record, numbered brief replies, auto-action
-  ledger with undo. Copy into `groups/<folder>/tools/`. Tests: run `bun test` inside the agent image.
+  ledger with undo; `family-plan.ts` (Bun) — meal plan and who drives the kids, read by the dashboard
+  (`dashboard.family_plan`). Copy into `groups/<folder>/tools/`. Tests: run `bun test` inside the agent image.
+- **Local mail review** (`scripts/mail-review-local.ts`, timer every 15 min): classifies new mail with a local model
+  (Ollama), one mailbox at a time under a lock. Profiles in `~/.config/nanoclaw/mail-review.json` (one per person:
+  handle, Gmail account, optional own task bridges); state in `data/mail-review/<handle>/`.
 
 ## Rules for this install
 
