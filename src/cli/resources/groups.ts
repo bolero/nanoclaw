@@ -625,7 +625,7 @@ registerResource({
       description:
         "Mount a host directory into a group's containers. OPERATOR-ONLY — never runnable from " +
         'inside a container (mounting host paths is a filesystem-access boundary). Requires ' +
-        '`ncl groups restart` to take effect. Use --id <group-id> --host <host-path> --container <container-path> [--ro].',
+        '`ncl groups restart` to take effect. Use --id <group-id> --host <host-path> --container <container-path> [--ro | --rw]. Mounts are read-only unless --rw is given and the mount allowlist root allows read-write.',
       handler: async (args) => {
         const id = args.id as string;
         if (!id) throw new Error('--id is required');
@@ -636,16 +636,18 @@ registerResource({
         const row = await getContainerConfig(id);
         if (!row) throw new Error(`No container config for group: ${id}`);
 
+        // Read-only unless --rw is given; even then the mount allowlist root must allow read-write.
+        if (args.rw && (args.ro || args.readonly)) throw new Error('give --ro or --rw, not both');
         const mount: AdditionalMountConfig = {
           hostPath,
           containerPath,
-          ...(args.ro || args.readonly ? { readonly: true } : {}),
+          ...(args.rw ? { readonly: false } : args.ro || args.readonly ? { readonly: true } : {}),
         };
         const existing = JSON.parse(row.additional_mounts) as AdditionalMountConfig[];
-        if (!existing.some((m) => m.hostPath === hostPath && m.containerPath === containerPath)) {
-          existing.push(mount);
-          await updateContainerConfigJson(id, 'additional_mounts', existing);
-        }
+        const same = (m: AdditionalMountConfig) => m.hostPath === hostPath && m.containerPath === containerPath;
+        // Re-adding the same mount updates its mode instead of being ignored.
+        const next = [...existing.filter((m) => !same(m)), mount];
+        await updateContainerConfigJson(id, 'additional_mounts', next);
         return { added: mount, note: `Run \`ncl groups restart --id ${id}\` for the mount to take effect.` };
       },
     },
