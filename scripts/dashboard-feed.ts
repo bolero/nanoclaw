@@ -968,7 +968,7 @@ export function collectFamilyPlan(file: string, tz: string, now = new Date()): S
       const missing = !x.drop || !x.pickup;
       // "n/a" marks a leg that isn't needed (pickup-only / drop-only); null means unassigned.
       const leg = (label: string, v?: string | null) =>
-        v?.toLowerCase() === 'n/a' ? '' : v ? `${label} ${clip(v, 20)}` : `${label} ?`;
+        /^(n\/a|not needed)$/i.test(v ?? '') ? '' : v ? `${label} ${clip(v, 20)}` : `${label} ?`;
       const who = [leg('drop', x.drop), leg('pick up', x.pickup)].filter(Boolean);
       return {
         title: `${clip(x.title, 60)}${x.who ? ` (${clip(x.who, 20)})` : ''}`,
