@@ -966,10 +966,10 @@ export function collectFamilyPlan(file: string, tz: string, now = new Date()): S
   if (drives.length) {
     const rows: Row[] = drives.map((x) => {
       const missing = !x.drop || !x.pickup;
-      const who = [
-        x.drop ? `drop ${clip(x.drop, 20)}` : 'drop ?',
-        x.pickup ? `pick up ${clip(x.pickup, 20)}` : 'pick up ?',
-      ];
+      // "n/a" marks a leg that isn't needed (pickup-only / drop-only); null means unassigned.
+      const leg = (label: string, v?: string | null) =>
+        v?.toLowerCase() === 'n/a' ? '' : v ? `${label} ${clip(v, 20)}` : `${label} ?`;
+      const who = [leg('drop', x.drop), leg('pick up', x.pickup)].filter(Boolean);
       return {
         title: `${clip(x.title, 60)}${x.who ? ` (${clip(x.who, 20)})` : ''}`,
         detail: [`${label(x.date)}${x.time ? ` ${clip(x.time, 5)}` : ''}`, ...who, x.note ? clip(x.note, 60) : '']

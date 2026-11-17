@@ -7,7 +7,8 @@
  *   bun family-plan.ts meal set <YYYY-MM-DD> <breakfast|lunch|dinner|snack> <text>
  *   bun family-plan.ts meal clear <YYYY-MM-DD> [meal]
  *   bun family-plan.ts drive add <YYYY-MM-DD> <HH:MM|-> <title> [--who <kid>] [--note <text>]   -> prints the id
- *   bun family-plan.ts drive set <id> [--drop <name|none>] [--pickup <name|none>] [--note <text>] [--time HH:MM]
+ *   bun family-plan.ts drive set <id> [--drop <name|none|n/a>] [--pickup <name|none|n/a>] [--note <text>] [--time HH:MM]
+ *       (n/a = that leg isn't needed, e.g. pickup-only; none = unassigned, shows "needs a driver")
  *   bun family-plan.ts drive remove <id>
  *   bun family-plan.ts drive open [--days 2]                  drives still missing a driver
  *
@@ -134,7 +135,10 @@ export function setDrive(
 ): Drive {
   const x = plan.drives.find((d) => d.id === id);
   if (!x) throw new Error(`no drive "${id}"`);
-  const who = (v: string) => (v.toLowerCase() === 'none' ? null : text(v, 30, 'driver'));
+  const who = (v: string) => {
+    const k = v.trim().toLowerCase();
+    return k === 'none' ? null : k === 'n/a' ? 'n/a' : text(v, 30, 'driver');
+  };
   if (opts.drop !== undefined) x.drop = who(opts.drop);
   if (opts.pickup !== undefined) x.pickup = who(opts.pickup);
   if (opts.note !== undefined) x.note = opts.note ? text(opts.note, 120, 'note') : undefined;
