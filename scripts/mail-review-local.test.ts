@@ -265,3 +265,13 @@ describe('mail-review-local profiles', () => {
     expect(fs.existsSync(path.join(root, 'state.json'))).toBe(false);
   });
 });
+
+describe('addOllamaStats', () => {
+  it('sums tokens and converts nanoseconds to ms', async () => {
+    const { addOllamaStats } = await import('./mail-review-local.js');
+    const s = { requests: 0, failed: 0, promptTokens: 0, outputTokens: 0, totalMs: 0, loadMs: 0 };
+    addOllamaStats(s, { prompt_eval_count: 100, eval_count: 20, total_duration: 1_500_000_000, load_duration: 2_000_000 });
+    addOllamaStats(s, { eval_count: 5 });
+    expect(s).toEqual({ requests: 2, failed: 0, promptTokens: 100, outputTokens: 25, totalMs: 1500, loadMs: 2 });
+  });
+});

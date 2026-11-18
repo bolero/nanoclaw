@@ -552,6 +552,20 @@ async function gmailJson(token: string, p: string): Promise<unknown> {
   return res.json();
 }
 
+/** Per-run Ollama totals, reset in runProfile and written to health.json/the run log. */
+export const ollamaStats = { requests: 0, failed: 0, promptTokens: 0, outputTokens: 0, totalMs: 0, loadMs: 0 };
+
+export function addOllamaStats(
+  stats: typeof ollamaStats,
+  body: { prompt_eval_count?: number; eval_count?: number; total_duration?: number; load_duration?: number },
+): void {
+  stats.requests += 1;
+  stats.promptTokens += body.prompt_eval_count ?? 0;
+  stats.outputTokens += body.eval_count ?? 0;
+  stats.totalMs += Math.round((body.total_duration ?? 0) / 1e6);
+  stats.loadMs += Math.round((body.load_duration ?? 0) / 1e6);
+}
+
 async function ollamaChat(base: string, model: string, system: string, user: string, format: object): Promise<string> {
   const res = await fetch(`${base}/api/chat`, {
     method: 'POST',
@@ -569,8 +583,18 @@ async function ollamaChat(base: string, model: string, system: string, user: str
       ],
     }),
   });
-  if (!res.ok) throw new Error(`Ollama ${res.status}`);
-  const body = (await res.json()) as { message?: { content?: string } };
+  if (!res.ok) {
+    ollamaStats.failed += 1;
+    throw new Error(`Ollama ${res.status}`);
+  }
+  const body = (await res.json()) as {
+    message?: { content?: string };
+    prompt_eval_count?: number;
+    eval_count?: number;
+    total_duration?: number;
+    load_duration?: number;
+  };
+  addOllamaStats(ollamaStats, body);
   return body.message?.content ?? '';
 }
 
@@ -683,6 +707,7 @@ async function runProfile(profile: Profile, dir: string): Promise<void> {
   const query =
     env.MAIL_REVIEW_QUERY ??
     'newer_than:2d -in:spam -in:sent -in:chats -category:promotions -category:social -category:forums';
+  Object.assign(ollamaStats, { requests: 0, failed: 0, promptTokens: 0, outputTokens: 0, totalMs: 0, loadMs: 0 });
   const ollama = (env.MAIL_REVIEW_OLLAMA ?? 'http://localhost:11434').replace(/\/+$/, '');
   const model = env.MAIL_REVIEW_MODEL ?? 'gemma4:26b-a4b';
   const handle = profile.handle;
@@ -829,6 +854,7 @@ async function runProfile(profile: Profile, dir: string): Promise<void> {
     model,
     handle,
     runSeconds: +((Date.now() - started) / 1000).toFixed(1),
+    ollama: { ...ollamaStats },
   };
   console.log(JSON.stringify(newHealth));
   if (dryRun) {
