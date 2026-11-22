@@ -118,6 +118,11 @@ export interface DashboardConfig {
    * With `before`/`after` (HH:MM), only blocks starting before or ending after those times are shown.
    */
   busy?: { titles: string[]; label: string; before?: string; after?: string };
+  /**
+   * A read-only family display (wall iPad): this person's Today board without packages, written as
+   * JSON to `file` (relative to the project) for a static page to show.
+   */
+  display?: { handle: string; file: string };
   /** Short display names for calendar ids on Today, e.g. {school: School, personal: Abhijeet}. */
   calendar_labels?: Record<string, string>;
   /** Gatus base URL for service health on Ops. */
@@ -430,6 +435,7 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
         'extra_sections',
         'busy',
         'calendar_labels',
+        'display',
       ],
       ['audience', 'today_calendars'],
     );
@@ -489,6 +495,13 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
             audience: v.strs(o.audience, `dashboard.extra_sections[${i}].audience`, HANDLE),
           };
         });
+    }
+    if (d.display !== undefined) {
+      const o = v.obj(d.display, 'dashboard.display', ['handle', 'file']);
+      dashboard.display = {
+        handle: v.str(o.handle, 'dashboard.display.handle', HANDLE),
+        file: v.str(o.file, 'dashboard.display.file', /^[A-Za-z0-9._/-]+\.json$/),
+      };
     }
     if (d.busy !== undefined) {
       const o = v.obj(d.busy, 'dashboard.busy', ['titles', 'label', 'before', 'after'], ['titles', 'label']);

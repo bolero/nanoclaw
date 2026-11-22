@@ -703,3 +703,34 @@ describe('collectExtraSections', () => {
     expect(collectExtraSections(file + '.missing')).toEqual([]);
   });
 });
+
+describe('family display', () => {
+  it('keeps one person’s family sections, drops packages and links', async () => {
+    const { familyDisplay } = await import('./dashboard-feed.js');
+    const out = familyDisplay(
+      {
+        version: 1,
+        generatedAt: '2026-11-22T00:00:00Z',
+        timezone: 'UTC',
+        boards: [
+          { id: 'today', title: 'Today', audience: ['a'], sections: [] },
+          {
+            id: 'today',
+            title: 'Today',
+            audience: ['b'],
+            sections: [
+              { id: 'packages', kind: 'rows', title: 'Packages', rows: [] },
+              { id: 'x-school-k', kind: 'rows', title: 'School', rows: [{ title: 'Files', url: 'https://p/x' }] },
+            ],
+          },
+          { id: 'ops', title: 'Ops', audience: ['b'], sections: [] },
+        ],
+      },
+      'b',
+    );
+    expect(out!.boards).toHaveLength(1);
+    expect(out!.boards[0]!.sections.map((s) => s.id)).toEqual(['x-school-k']);
+    const s = out!.boards[0]!.sections[0]!;
+    expect(s.kind === 'rows' && s.rows![0]!.url).toBeUndefined();
+  });
+});

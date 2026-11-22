@@ -1294,6 +1294,30 @@ function readPrevious(file: string): DashboardFile | null {
   }
 }
 
+/** Sections for the read-only family display: one person's Today board without packages or links. */
+const DISPLAY_SECTIONS = /^(weather|events|tasks|shopping|meals|drives|x-.+)$/;
+export function familyDisplay(file: DashboardFile, handle: string): DashboardFile | null {
+  const board = file.boards.find((b) => b.id === 'today' && b.audience.includes(handle));
+  if (!board) return null;
+  const strip = (s: Section): Section => {
+    if (s.kind === 'rows') return { ...s, rows: s.rows?.map(({ url: _u, ...r }) => r) };
+    if (s.kind === 'events')
+      return { ...s, days: s.days?.map((d) => ({ ...d, events: d.events.map(({ url: _u, ...e }) => e) })) };
+    return s;
+  };
+  return {
+    ...file,
+    boards: [
+      {
+        id: 'today',
+        title: 'Family',
+        audience: [],
+        sections: board.sections.filter((s) => DISPLAY_SECTIONS.test(s.id)).map(strip),
+      },
+    ],
+  };
+}
+
 export function writeAtomic(file: string, data: string): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${process.pid}.tmp`;
@@ -1324,6 +1348,11 @@ async function main(): Promise<void> {
   const json = JSON.stringify(file, null, 2);
   if (args.includes('--print')) console.log(json);
   writeAtomic(out, json);
+  const display = cfg.dashboard?.display;
+  if (display && !display.file.split('/').includes('..')) {
+    const family = familyDisplay(file, display.handle);
+    if (family) writeAtomic(path.join(root, display.file), JSON.stringify(family));
+  }
   const errors = file.boards.flatMap((b) =>
     b.sections.filter((s) => s.error).map((s) => `${b.id}/${s.id}: ${s.error}`),
   );
