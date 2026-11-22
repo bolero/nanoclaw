@@ -108,6 +108,11 @@ export interface DashboardConfig {
   shopping?: { lists: string[]; audience: string[] };
   /** A family plan file (meals, activities and drivers) kept by an agent, shown on Today for `audience`. */
   family_plan?: { file: string; audience: string[] };
+  /**
+   * Ready-made row sections written by host scripts (e.g. a school feed), shown on Today for `audience`.
+   * Each file holds `{ "sections": [{ "id", "title", "summary"?, "rows": [...] }] }`.
+   */
+  extra_sections?: Array<{ file: string; audience: string[] }>;
   /** Gatus base URL for service health on Ops. */
   gatus_url?: string;
   /** Per app handle: whose OmniFocus / Reminders tasks show on that person's Today (read-only). */
@@ -415,6 +420,7 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
         'today_calendars_by_handle',
         'shopping',
         'family_plan',
+        'extra_sections',
       ],
       ['audience', 'today_calendars'],
     );
@@ -463,6 +469,17 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
         file: v.str(o.file, 'dashboard.family_plan.file', /^[A-Za-z0-9._/-]+\.json$/),
         audience: v.strs(o.audience, 'dashboard.family_plan.audience', HANDLE),
       };
+    }
+    if (d.extra_sections !== undefined) {
+      if (!Array.isArray(d.extra_sections)) v.err('dashboard.extra_sections', 'must be a list');
+      else
+        dashboard.extra_sections = d.extra_sections.map((raw, i) => {
+          const o = v.obj(raw, `dashboard.extra_sections[${i}]`, ['file', 'audience']);
+          return {
+            file: v.str(o.file, `dashboard.extra_sections[${i}].file`, /^[A-Za-z0-9._/-]+\.json$/),
+            audience: v.strs(o.audience, `dashboard.extra_sections[${i}].audience`, HANDLE),
+          };
+        });
     }
     if (d.event_titles !== undefined) {
       const t = v.obj(d.event_titles, 'dashboard.event_titles', Object.keys((d.event_titles as object) ?? {}), []);

@@ -934,6 +934,44 @@ const clip = (s: unknown, n: number) =>
     .slice(0, n);
 
 /** Meals and drives for today and tomorrow from the family agent's plan file (plain data, size-capped). */
+const ROW_STATUS = new Set<RowStatus>(['ok', 'warn', 'bad', 'info']);
+
+/**
+ * Row sections written by a host script (dashboard.extra_sections). The file is untrusted input:
+ * only rows sections are kept, ids are prefixed with `x-`, and text is clipped. A missing or bad
+ * file shows nothing rather than failing the board.
+ */
+export function collectExtraSections(file: string): Section[] {
+  let data: { sections?: unknown };
+  try {
+    const raw = fs.readFileSync(file, 'utf8');
+    if (raw.length > 512 * 1024) throw new Error('too large');
+    data = JSON.parse(raw) as { sections?: unknown };
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(data.sections)) return [];
+  const text = (v: unknown, n: number) => (typeof v === 'string' && v.trim() ? clip(v.trim(), n) : undefined);
+  const out: Section[] = [];
+  for (const s of data.sections.slice(0, 6) as Array<Record<string, unknown>>) {
+    const id = text(s?.id, 40)?.replace(/[^a-z0-9-]/gi, '-');
+    const title = text(s?.title, 60);
+    if (!id || !title) continue;
+    const rows: Row[] = (Array.isArray(s.rows) ? (s.rows as Array<Record<string, unknown>>) : [])
+      .slice(0, 30)
+      .filter((r) => text(r?.title, 120))
+      .map((r) => ({
+        title: text(r.title, 120)!,
+        ...(text(r.detail, 240) ? { detail: text(r.detail, 240) } : {}),
+        ...(ROW_STATUS.has(r.status as RowStatus) ? { status: r.status as RowStatus } : {}),
+        ...(text(r.time, 40) ? { time: text(r.time, 40) } : {}),
+      }));
+    const summary = text(s.summary, 160);
+    out.push({ id: `x-${id}`, kind: 'rows', title, ...(summary ? { summary } : {}), rows });
+  }
+  return out;
+}
+
 export function collectFamilyPlan(file: string, tz: string, now = new Date()): Section[] {
   let plan: FamilyPlan;
   try {
@@ -1033,6 +1071,10 @@ export async function buildDashboard(opts: {
   const familyPlan = d.family_plan
     ? collectFamilyPlan(path.resolve(opts.projectRoot ?? process.cwd(), d.family_plan.file), opts.tz, opts.now)
     : [];
+  const extras = (d.extra_sections ?? []).map((x) => ({
+    audience: x.audience,
+    sections: collectExtraSections(path.resolve(opts.projectRoot ?? process.cwd(), x.file)),
+  }));
   const eventsFor = async (handle: string): Promise<Section> => {
     const own = d.today_calendars_by_handle?.[handle];
     return own
@@ -1042,6 +1084,7 @@ export async function buildDashboard(opts: {
   const familyFor = (handle: string): Section[] => [
     ...(d.family_plan?.audience.includes(handle) ? familyPlan : []),
     ...(shopping && d.shopping!.audience.includes(handle) ? [shopping] : []),
+    ...extras.filter((x) => x.audience.includes(handle)).flatMap((x) => x.sections),
   ];
   const todayBoards: Board[] = [];
   for (const handle of d.audience.today) {

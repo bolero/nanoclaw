@@ -616,3 +616,44 @@ describe('family sections on Today', () => {
     expect(s.kind === 'rows' && s.summary).toBe('2 items');
   });
 });
+
+describe('collectExtraSections', () => {
+  it('keeps clean row sections and drops bad input', async () => {
+    const { collectExtraSections } = await import('./dashboard-feed.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'extra-'));
+    const file = path.join(dir, 'school.json');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        sections: [
+          {
+            id: 'school anika',
+            title: 'School · Anika',
+            summary: '1 missing',
+            rows: [
+              { title: 'Missing: Homework', detail: 'English · due 10/29', status: 'bad', time: '10/29' },
+              { title: '', detail: 'dropped' },
+              { title: 'Odd status', status: 'evil' },
+            ],
+          },
+          { title: 'no id' },
+          { id: 'weather', kind: 'weather', title: 'Spoof' },
+        ],
+      }),
+    );
+    const s = collectExtraSections(file);
+    expect(s).toHaveLength(2);
+    expect(s[0]).toEqual({
+      id: 'x-school-anika',
+      kind: 'rows',
+      title: 'School · Anika',
+      summary: '1 missing',
+      rows: [
+        { title: 'Missing: Homework', detail: 'English · due 10/29', status: 'bad', time: '10/29' },
+        { title: 'Odd status' },
+      ],
+    });
+    expect(s[1]).toMatchObject({ id: 'x-weather', kind: 'rows', rows: [] });
+    expect(collectExtraSections(file + '.missing')).toEqual([]);
+  });
+});
