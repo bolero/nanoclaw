@@ -113,6 +113,13 @@ export interface DashboardConfig {
    * Each file holds `{ "sections": [{ "id", "title", "summary"?, "rows": [...] }] }`.
    */
   extra_sections?: Array<{ file: string; audience: string[] }>;
+  /**
+   * Work blocks (events titled like `titles`) shown as one "busy" line per day instead of events.
+   * With `before`/`after` (HH:MM), only blocks starting before or ending after those times are shown.
+   */
+  busy?: { titles: string[]; label: string; before?: string; after?: string };
+  /** Short display names for calendar ids on Today, e.g. {school: School, personal: Abhijeet}. */
+  calendar_labels?: Record<string, string>;
   /** Gatus base URL for service health on Ops. */
   gatus_url?: string;
   /** Per app handle: whose OmniFocus / Reminders tasks show on that person's Today (read-only). */
@@ -421,6 +428,8 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
         'shopping',
         'family_plan',
         'extra_sections',
+        'busy',
+        'calendar_labels',
       ],
       ['audience', 'today_calendars'],
     );
@@ -480,6 +489,29 @@ export function validateHomeConfig(raw: unknown): HomeConfig {
             audience: v.strs(o.audience, `dashboard.extra_sections[${i}].audience`, HANDLE),
           };
         });
+    }
+    if (d.busy !== undefined) {
+      const o = v.obj(d.busy, 'dashboard.busy', ['titles', 'label', 'before', 'after'], ['titles', 'label']);
+      const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+      dashboard.busy = {
+        titles: v.strs(o.titles, 'dashboard.busy.titles'),
+        label: v.str(o.label, 'dashboard.busy.label').slice(0, 40),
+        ...(o.before !== undefined ? { before: v.str(o.before, 'dashboard.busy.before', HHMM) } : {}),
+        ...(o.after !== undefined ? { after: v.str(o.after, 'dashboard.busy.after', HHMM) } : {}),
+      };
+    }
+    if (d.calendar_labels !== undefined) {
+      const t = v.obj(
+        d.calendar_labels,
+        'dashboard.calendar_labels',
+        Object.keys((d.calendar_labels as object) ?? {}),
+        [],
+      );
+      dashboard.calendar_labels = {};
+      for (const [id, raw] of Object.entries(t)) {
+        if (!calIds.has(id)) v.err(`dashboard.calendar_labels.${id}`, `unknown calendar "${id}"`);
+        dashboard.calendar_labels[id] = v.str(raw, `dashboard.calendar_labels.${id}`).slice(0, 20);
+      }
     }
     if (d.event_titles !== undefined) {
       const t = v.obj(d.event_titles, 'dashboard.event_titles', Object.keys((d.event_titles as object) ?? {}), []);

@@ -37,6 +37,8 @@ export interface Row {
   detail?: string;
   status?: RowStatus;
   time?: string;
+  /** Opens the item in its own app (iPhone): https, omnifocus: or x-apple-reminderkit: only. */
+  url?: string;
 }
 
 export interface DashEvent {
@@ -45,7 +47,39 @@ export interface DashEvent {
   end: string;
   allDay: boolean;
   calendar: string;
+  /** Short calendar name for display (dashboard.calendar_labels), else the calendar id. */
+  label?: string;
   location?: string;
+  /** Google Calendar link for the event. */
+  url?: string;
+  /** Multi-day all-day event shown once: the last day, e.g. "until Fri 27 Nov". */
+  until?: string;
+}
+
+export interface DashDay {
+  date: string;
+  label: string;
+  events: DashEvent[];
+  /** One line of work blocks for the day, e.g. "Abhijeet busy 7:30–8:30, 4:00–5:30". */
+  busy?: string;
+}
+
+const LINK_SCHEMES = /^(https:\/\/|omnifocus:\/\/\/task\/|x-apple-reminderkit:\/\/)/;
+/** A link the app may open, or undefined. */
+export function safeUrl(u: unknown): string | undefined {
+  return typeof u === 'string' && u.length <= 500 && LINK_SCHEMES.test(u) && !/\s/.test(u) ? u : undefined;
+}
+
+/** Carrier tracking page for a tracking number, when the carrier is known. */
+export function trackingUrl(carrier: string | undefined, tracking: string | undefined): string | undefined {
+  if (!tracking || !/^[A-Za-z0-9]{8,40}$/.test(tracking)) return undefined;
+  const c = (carrier ?? '').toLowerCase();
+  const t = encodeURIComponent(tracking);
+  if (c.includes('ups') || /^1Z/i.test(tracking)) return `https://www.ups.com/track?tracknum=${t}`;
+  if (c.includes('usps')) return `https://tools.usps.com/go/TrackConfirmAction?tLabels=${t}`;
+  if (c.includes('fedex')) return `https://www.fedex.com/fedextrack/?trknbr=${t}`;
+  if (c.includes('dhl')) return `https://www.dhl.com/us-en/home/tracking.html?tracking-id=${t}`;
+  return undefined;
 }
 
 export type Section =
@@ -55,7 +89,7 @@ export type Section =
       kind: 'events';
       title: string;
       error?: string;
-      days?: Array<{ date: string; label: string; events: DashEvent[] }>;
+      days?: DashDay[];
     }
   | { id: string; kind: 'rows'; title: string; error?: string; summary?: string; rows?: Row[] };
 
@@ -234,6 +268,7 @@ async function nwsWeather(
 
 interface GEvent {
   summary?: string;
+  htmlLink?: string;
   status?: string;
   location?: string;
   start?: { date?: string; dateTime?: string };
@@ -297,17 +332,61 @@ export class CalendarReader {
         allDay: !e.start?.dateTime,
         calendar: calendarId,
         ...(e.location ? { location: e.location.slice(0, 200) } : {}),
+        ...(safeUrl(e.htmlLink) ? { url: e.htmlLink } : {}),
       }));
   }
 }
 
-/** Group events into Today / Tomorrow / weekday buckets for the next 7 days. */
+export interface BusyOptions {
+  /** Original event titles that mark work blocks, lower-case (e.g. "blocked time"). */
+  titles: string[];
+  /** Line prefix, e.g. "Abhijeet busy". */
+  label: string;
+  /** Only blocks that start before `before` or end after `after` (HH:MM, local); both unset = all. */
+  before?: string;
+  after?: string;
+}
+
+const dayLabel = (date: string) =>
+  new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short' }).format(
+    new Date(`${date}T12:00:00Z`),
+  );
+
+/** "[Merryhill]: Thanksgiving Holiday | No School" -> "Thanksgiving Holiday · No School". */
+export function cleanTitle(title: string): string {
+  return title
+    .replace(/^\s*\[[^\]]{1,40}\]\s*:?\s*/, '')
+    .replace(/\s+\|\s+/g, ' · ')
+    .trim();
+}
+
+/** Local HH:MM of an instant, and a short "4:05" / "16:05" style label. */
+function hhmm(iso: string, tz: string): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(new Date(iso));
+}
+function shortTime(iso: string, tz: string): string {
+  return new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' })
+    .format(new Date(iso))
+    .replace(/\s?(AM|PM)$/i, (m) => m.trim().toLowerCase().replace('m', ''));
+}
+
+/**
+ * Group events into Today / Tomorrow / weekday buckets for the next 7 days. Multi-day all-day events
+ * show once (on the first day in range) with `until`; identical events from two calendars show once;
+ * work blocks (busy.titles) become one `busy` line per day instead of events.
+ */
 export function bucketEvents(
   events: DashEvent[],
   today: string,
   tz: string,
-): Array<{ date: string; label: string; events: DashEvent[] }> {
-  const days: Array<{ date: string; label: string; events: DashEvent[] }> = [];
+  opts: { busy?: BusyOptions; originalTitle?: (e: DashEvent) => string } = {},
+): DashDay[] {
+  const days: DashDay[] = [];
   for (let i = 0; i < 7; i++) {
     const date = addDays(today, i);
     const label =
@@ -323,13 +402,44 @@ export function bucketEvents(
             }).format(new Date(`${date}T12:00:00Z`));
     days.push({ date, label, events: [] });
   }
+  const busyBlocks = new Map<string, Array<{ start: string; end: string }>>();
+  const seen = new Set<string>();
   for (const e of events) {
     const startDate = e.allDay ? e.start : localDate(new Date(e.start), tz);
-    // All-day events span [start, end); show them on every covered day in range.
-    const endDate = e.allDay ? addDays(e.end, -1) : startDate;
-    for (const d of days) if (d.date >= startDate && d.date <= endDate) d.events.push(e);
+    const original = (opts.originalTitle?.(e) ?? e.title).trim().toLowerCase();
+    if (opts.busy && !e.allDay && opts.busy.titles.includes(original)) {
+      const b = opts.busy;
+      const inWindow =
+        (!b.before && !b.after) || (b.before && hhmm(e.start, tz) < b.before) || (b.after && hhmm(e.end, tz) > b.after);
+      if (inWindow) busyBlocks.set(startDate, [...(busyBlocks.get(startDate) ?? []), { start: e.start, end: e.end }]);
+      continue;
+    }
+    const key = `${e.title.trim().toLowerCase()}|${e.start}|${e.end}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (e.allDay) {
+      // All-day events span [start, end): show on the first covered day in range, with the last day.
+      const last = addDays(e.end, -1);
+      const first = days.find((d) => d.date >= startDate && d.date <= last);
+      if (first) first.events.push(last > first.date ? { ...e, until: `until ${dayLabel(last)}` } : e);
+    } else {
+      days.find((d) => d.date === startDate)?.events.push(e);
+    }
   }
-  for (const d of days) d.events.sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.start.localeCompare(b.start));
+  for (const d of days) {
+    d.events.sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.start.localeCompare(b.start));
+    const blocks = (busyBlocks.get(d.date) ?? []).sort((a, b) => a.start.localeCompare(b.start));
+    // Merge back-to-back or overlapping blocks.
+    const merged: Array<{ start: string; end: string }> = [];
+    for (const blk of blocks) {
+      const prev = merged[merged.length - 1];
+      if (prev && Date.parse(blk.start) <= Date.parse(prev.end)) {
+        if (Date.parse(blk.end) > Date.parse(prev.end)) prev.end = blk.end;
+      } else merged.push({ ...blk });
+    }
+    if (merged.length && opts.busy)
+      d.busy = `${opts.busy.label} ${merged.map((m) => `${shortTime(m.start, tz)}–${shortTime(m.end, tz)}`).join(', ')}`;
+  }
   return days;
 }
 
@@ -355,11 +465,26 @@ export async function collectEvents(
     }
   }
   const titles = cfg.dashboard?.event_titles ?? {};
+  const labels = cfg.dashboard?.calendar_labels ?? {};
+  const originals = new WeakMap<DashEvent, string>();
   const shown = all.map((e) => {
     const alias = titles[e.title.trim().toLowerCase()];
-    return alias ? { ...e, title: alias } : e;
+    const out: DashEvent = {
+      ...e,
+      title: alias ?? cleanTitle(e.title),
+      ...(labels[e.calendar] ? { label: labels[e.calendar] } : {}),
+    };
+    originals.set(out, e.title);
+    return out;
   });
-  return { ...section, days: bucketEvents(shown, today, tz), ...(errors.length ? { error: errors.join('; ') } : {}) };
+  const b = cfg.dashboard?.busy;
+  const days = bucketEvents(shown, today, tz, {
+    originalTitle: (e) => originals.get(e) ?? e.title,
+    ...(b
+      ? { busy: { titles: b.titles.map((t) => t.toLowerCase()), label: b.label, before: b.before, after: b.after } }
+      : {}),
+  });
+  return { ...section, days, ...(errors.length ? { error: errors.join('; ') } : {}) };
 }
 
 // ---- Tasks (per person, read-only through the bridges) -----------------------------------
@@ -488,6 +613,7 @@ export async function collectTasks(
             detail: ['OmniFocus', t.projectName, d.when].filter(Boolean).join(' · '),
             status: d.status,
             time: t.dueDate ?? undefined,
+            ...(/^[A-Za-z0-9_.-]{1,64}$/.test(t.id) ? { url: `omnifocus:///task/${t.id}` } : {}),
             sort: t.dueDate ?? '9',
           });
         }
@@ -526,6 +652,9 @@ export async function collectTasks(
           detail: ['Reminders', it.list === 'Reminders' ? '' : it.list, d.when].filter(Boolean).join(' · '),
           status: d.status,
           time: due,
+          ...(it.eventKitId && /^[A-Za-z0-9-]{8,64}$/.test(it.eventKitId)
+            ? { url: `x-apple-reminderkit://REMCDReminder/${it.eventKitId}` }
+            : {}),
           sort: due ?? '9',
         });
       }
@@ -783,12 +912,17 @@ export function collectPackages(dir: string): { handle: string | null; section: 
     delayed: 'Delayed',
   };
   const rows: Row[] = list.map((p) => ({
-    title: `${p.item && !/^not specified$/i.test(p.item) ? p.item : p.order ? `Order ${p.order}` : 'Package'} · ${p.from ?? ''}`.slice(0, 80),
+    title:
+      `${p.item && !/^not specified$/i.test(p.item) ? p.item : p.order ? `Order ${p.order}` : 'Package'} · ${p.from ?? ''}`.slice(
+        0,
+        80,
+      ),
     detail: [label[p.status ?? ''] ?? 'In transit', p.carrier, p.eta ? `arrives ${p.eta}` : undefined]
       .filter(Boolean)
       .join(' · '),
     status: (p.status === 'delivered' ? 'ok' : p.status === 'delayed' ? 'warn' : 'info') as RowStatus,
     ...(p.eta ? { time: `${p.eta}T12:00:00.000Z` } : {}),
+    ...(trackingUrl(p.carrier, p.tracking) ? { url: trackingUrl(p.carrier, p.tracking) } : {}),
   }));
   const coming = list.filter((p) => p.status !== 'delivered').length;
   return {
@@ -858,13 +992,11 @@ export async function collectFeedback(ncl: NclRunner): Promise<Section> {
     },
     ...f.senders
       .filter((x) => x.useful + x.notUseful > 0)
-      .map(
-        (x): Row => ({
-          title: x.sender,
-          detail: `${x.useful} useful · ${x.notUseful} not useful · ${x.shown} shown`,
-          status: x.notUseful > x.useful ? 'warn' : 'ok',
-        }),
-      ),
+      .map((x): Row => ({
+        title: x.sender,
+        detail: `${x.useful} useful · ${x.notUseful} not useful · ${x.shown} shown`,
+        status: x.notUseful > x.useful ? 'warn' : 'ok',
+      })),
   ];
   return { id: 'feedback', kind: 'rows', title: 'Suggestions, last 7 days', rows };
 }
@@ -900,6 +1032,7 @@ export async function collectShopping(
           title: `${l.name} · ${items.length}`,
           detail: items.slice(0, 6).join(', ') + (items.length > 6 ? ', …' : ''),
           status: 'info',
+          url: 'x-apple-reminderkit://',
         });
     } catch (e) {
       errors.push(`${l.name}: ${(e as Error).message.slice(0, 80)}`);
@@ -965,6 +1098,7 @@ export function collectExtraSections(file: string): Section[] {
         ...(text(r.detail, 240) ? { detail: text(r.detail, 240) } : {}),
         ...(ROW_STATUS.has(r.status as RowStatus) ? { status: r.status as RowStatus } : {}),
         ...(text(r.time, 40) ? { time: text(r.time, 40) } : {}),
+        ...(safeUrl(r.url) ? { url: safeUrl(r.url) } : {}),
       }));
     const summary = text(s.summary, 160);
     out.push({ id: `x-${id}`, kind: 'rows', title, ...(summary ? { summary } : {}), rows });

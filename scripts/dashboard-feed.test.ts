@@ -8,6 +8,9 @@ import { describe, expect, it } from 'vitest';
 import {
   addDays,
   bucketEvents,
+  cleanTitle,
+  safeUrl,
+  trackingUrl,
   buildDashboard,
   CalendarReader,
   collectAlerts,
@@ -91,8 +94,49 @@ describe('Today', () => {
     expect(days[0]).toMatchObject({ label: 'Today', events: [{ title: 'Late dinner' }] });
     expect(days[1]!.label).toBe('Tomorrow');
     expect(days[1]!.events.map((e) => e.title)).toEqual(['School trip', 'Dentist']);
-    expect(days[2]!.events.map((e) => e.title)).toEqual(['School trip']);
+    // Multi-day all-day events show once, on the first day, with the last day.
+    expect(days[1]!.events[0]!.until).toBe('until Sun 15 Nov');
+    expect(days[2]!.events).toEqual([]);
     expect(days).toHaveLength(7);
+  });
+
+  it('turns work blocks outside school hours into one busy line and drops duplicates', () => {
+    const ev = (title: string, start: string, end: string): DashEvent => ({
+      title,
+      start,
+      end,
+      allDay: false,
+      calendar: 'family',
+    });
+    const days = bucketEvents(
+      [
+        ev('Blocked Time', '2026-11-16T15:30:00Z', '2026-11-16T16:30:00Z'), // 7:30-8:30
+        ev('Blocked Time', '2026-11-16T16:30:00Z', '2026-11-16T17:15:00Z'), // 8:30-9:15, merges
+        ev('Blocked Time', '2026-11-16T19:00:00Z', '2026-11-16T20:00:00Z'), // 11-12, inside school hours
+        ev('Blocked Time', '2026-11-17T00:00:00Z', '2026-11-17T01:30:00Z'), // 16:00-17:30
+        ev('Ballet', '2026-11-17T01:00:00Z', '2026-11-17T02:00:00Z'),
+        ev('Ballet', '2026-11-17T01:00:00Z', '2026-11-17T02:00:00Z'),
+      ],
+      '2026-11-16',
+      'America/Los_Angeles',
+      { busy: { titles: ['blocked time'], label: 'Abhijeet busy', before: '09:00', after: '15:00' } },
+    );
+    expect(days[0]!.busy).toBe('Abhijeet busy 7:30a–9:15a, 4:00p–5:30p');
+    expect(days[0]!.events.map((e) => e.title)).toEqual(['Ballet']);
+  });
+
+  it('cleans school-calendar title prefixes', () => {
+    expect(cleanTitle('[Merryhill]: Thanksgiving Holiday | No School')).toBe('Thanksgiving Holiday · No School');
+    expect(cleanTitle('Ballet')).toBe('Ballet');
+  });
+
+  it('only passes app-safe links', () => {
+    expect(safeUrl('https://x.example/a')).toBe('https://x.example/a');
+    expect(safeUrl('omnifocus:///task/abc')).toBe('omnifocus:///task/abc');
+    expect(safeUrl('javascript:alert(1)')).toBeUndefined();
+    expect(safeUrl('http://x.example')).toBeUndefined();
+    expect(trackingUrl('UPS', '1Z09R01AYW53690036')).toContain('ups.com');
+    expect(trackingUrl('DoorDash', undefined)).toBeUndefined();
   });
 
   it('reads a named calendar through the account read scope', async () => {
@@ -612,7 +656,9 @@ describe('family sections on Today', () => {
       { key: 'k', remindersUrl: 'http://r/mcp' },
       fetchFn,
     );
-    expect(s.kind === 'rows' && s.rows).toEqual([{ title: 'TJ · 2', detail: 'Milk, Eggs', status: 'info' }]);
+    expect(s.kind === 'rows' && s.rows).toEqual([
+      { title: 'TJ · 2', detail: 'Milk, Eggs', status: 'info', url: 'x-apple-reminderkit://' },
+    ]);
     expect(s.kind === 'rows' && s.summary).toBe('2 items');
   });
 });
