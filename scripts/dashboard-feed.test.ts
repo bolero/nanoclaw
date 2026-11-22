@@ -121,7 +121,7 @@ describe('Today', () => {
       'America/Los_Angeles',
       { busy: { titles: ['blocked time'], label: 'Abhijeet busy', before: '09:00', after: '15:00' } },
     );
-    expect(days[0]!.busy).toBe('Abhijeet busy 7:30a–9:15a, 4:00p–5:30p');
+    expect(days[0]!.busy).toBe('Abhijeet busy 7:30–9:15am, 4:00–5:30pm');
     expect(days[0]!.events.map((e) => e.title)).toEqual(['Ballet']);
   });
 

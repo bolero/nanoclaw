@@ -369,10 +369,18 @@ function hhmm(iso: string, tz: string): string {
     hourCycle: 'h23',
   }).format(new Date(iso));
 }
-function shortTime(iso: string, tz: string): string {
-  return new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' })
-    .format(new Date(iso))
-    .replace(/\s?(AM|PM)$/i, (m) => m.trim().toLowerCase().replace('m', ''));
+function timeParts(iso: string, tz: string): { t: string; ampm: string } {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' }).formatToParts(
+    new Date(iso),
+  );
+  const get = (k: string) => parts.find((p) => p.type === k)?.value ?? '';
+  return { t: `${get('hour')}:${get('minute')}`, ampm: get('dayPeriod').toLowerCase() };
+}
+/** "7:30–9:15am", "11:30am–1:00pm". */
+export function timeRange(startIso: string, endIso: string, tz: string): string {
+  const a = timeParts(startIso, tz);
+  const b = timeParts(endIso, tz);
+  return `${a.t}${a.ampm === b.ampm ? '' : a.ampm}–${b.t}${b.ampm}`;
 }
 
 /**
@@ -427,7 +435,7 @@ export function bucketEvents(
     }
   }
   for (const d of days) {
-    d.events.sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.start.localeCompare(b.start));
+    d.events.sort((a, b) => Number(b.allDay) - Number(a.allDay) || Date.parse(a.start) - Date.parse(b.start));
     const blocks = (busyBlocks.get(d.date) ?? []).sort((a, b) => a.start.localeCompare(b.start));
     // Merge back-to-back or overlapping blocks.
     const merged: Array<{ start: string; end: string }> = [];
@@ -438,7 +446,7 @@ export function bucketEvents(
       } else merged.push({ ...blk });
     }
     if (merged.length && opts.busy)
-      d.busy = `${opts.busy.label} ${merged.map((m) => `${shortTime(m.start, tz)}–${shortTime(m.end, tz)}`).join(', ')}`;
+      d.busy = `${opts.busy.label} ${merged.map((m) => timeRange(m.start, m.end, tz)).join(', ')}`;
   }
   return days;
 }
