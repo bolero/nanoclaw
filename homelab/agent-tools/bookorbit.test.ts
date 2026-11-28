@@ -248,6 +248,30 @@ group('bookorbit tool', () => {
     expect(await main(['link', '7'], none.f, CFG)).toMatchObject({ done: false, reason: 'not in the Library Dock yet' });
   });
 
+  it('watch wakes once per request that reached the library or failed; link marks its own', async () => {
+    const os = await import('node:os');
+    const fs = await import('node:fs');
+    const state = `${fs.mkdtempSync(`${os.tmpdir()}/bow-`)}/w.json`;
+    const list = (...items: any[]) => fake({ 'GET /admin/book-requests': { items } }).f;
+    const run = (...items: any[]) => main(['watch', '--state', state], list(...items), CFG) as Promise<any>;
+    expect(await run(REQ({ id: 1, status: 'downloading' }), REQ({ id: 2, status: 'available' }))).toEqual({ wakeAgent: false, data: { finished: [] } });
+    expect((await run(REQ({ id: 1, status: 'importing' }), REQ({ id: 2, status: 'available' }))).wakeAgent).toBe(false);
+    const out = await run(REQ({ id: 1, status: 'available' }), REQ({ id: 2, status: 'available' }), REQ({ id: 3, status: 'failed' }), REQ({ id: 4, status: 'approved' }));
+    expect(out.wakeAgent).toBe(true);
+    expect(out.data.finished.map((r: any) => [r.requestId, r.status])).toEqual([[1, 'in the library'], [3, 'failed']]);
+    expect((await run(REQ({ id: 1, status: 'available' }), REQ({ id: 3, status: 'failed' }))).wakeAgent).toBe(false);
+
+    // a Shelfmark download linked by the agent is not announced again
+    const req = REQ({ id: 4, status: 'approved', targetLibraryId: 10, createdAt: '2026-11-27T10:00:00Z' });
+    const linker = fake({
+      'GET /book-requests/4': req,
+      'GET /book-dock/files': { items: [{ id: 50, fileName: 'x.epub', status: 'filed', targetLibraryId: 10, createdAt: '2026-11-27T10:06:00Z', selectedMetadata: { title: req.title } }] },
+      'POST /admin/book-requests/4/fulfill': REQ({ id: 4, status: 'available' }),
+    });
+    expect(await main(['link', '4', '--state', state], linker.f, CFG)).toMatchObject({ done: true });
+    expect((await run(REQ({ id: 4, status: 'available' }))).wakeAgent).toBe(false);
+  });
+
   it('requires --kind and --for', async () => {
     const { f } = fake({});
     await expect(main(['request', 'audible', 'B0ABC', '--for', 'anika'], f, CFG)).rejects.toThrow(/--kind/);

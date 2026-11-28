@@ -19,6 +19,11 @@
  *   bun bookorbit.ts grab <requestId> <indexerId> <guid>        download the release a parent chose
  *   bun bookorbit.ts link <requestId>            after a Shelfmark download, close the request with
  *                                                the file in the person's Library Dock
+ *   bun bookorbit.ts watch [--state <file>]      pre-task gate: wakes the agent only when a request reached
+ *       the library, needs a check or failed since the last check. Prints one line {"wakeAgent": bool,
+ *       "data": {...}}. State: --state, $BOOKORBIT_WATCH_STATE or /workspace/agent/state/bookorbit-watch.json.
+ *       The first run only records what is there. `link` marks its request as seen, so a Shelfmark
+ *       download that was already announced is not announced twice.
  *
  * After a request is approved the tool looks for releases: one scoring AUTO_GRAB_SCORE or more is
  * grabbed straight away, otherwise the top three come back as `choices` (or `tryShelfmark`).
@@ -370,6 +375,26 @@ async function search(c: Client, cfg: Config, q: string, opts: Record<string, st
   };
 }
 
+const WATCH_FINAL = new Set(['available', 'needs_review', 'failed']);
+const watchFile = (opts: Record<string, string>) =>
+  opts.state ?? process.env.BOOKORBIT_WATCH_STATE ?? '/workspace/agent/state/bookorbit-watch.json';
+
+async function readWatch(file: string): Promise<Record<string, string> | undefined> {
+  const fs = await import('node:fs');
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')).seen;
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeWatch(file: string, seen: Record<string, string>) {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ checked: new Date().toISOString(), seen }));
+}
+
 export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config = loadConfig()) {
   const { pos, opts } = parseArgs(argv);
   const c = makeClient(cfg.url.replace(/\/+$/, ''), fetchImpl);
@@ -498,16 +523,35 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config
       );
       if (!hit) return { done: false, ...describe(req), reason: 'not in the Library Dock yet' };
       const r = await c.post(`/admin/book-requests/${id}/fulfill`, { bookDockFileId: hit.id, note: opts.note ?? 'Downloaded with Shelfmark' });
+      const seen = await readWatch(watchFile(opts));
+      if (seen) await writeWatch(watchFile(opts), { ...seen, [String(id)]: (r.request ?? r).status ?? 'available' });
       return { done: true, dockFile: hit.fileName, dockStatus: hit.status, ...describe(r.request ?? r) };
     }
+    case 'watch': {
+      const file = watchFile(opts);
+      const prev = await readWatch(file);
+      const res = await c.get('/admin/book-requests?limit=30&sortBy=createdAt&sortDir=desc');
+      const seen: Record<string, string> = { ...(prev ?? {}) };
+      const finished: any[] = [];
+      for (const r of res.items ?? []) {
+        const id = String(r.id);
+        const was = prev?.[id];
+        if (prev && WATCH_FINAL.has(r.status) && was !== r.status && !(was && WATCH_FINAL.has(was) && r.status !== 'failed')) {
+          finished.push(describe(r));
+        }
+        seen[id] = r.status;
+      }
+      await writeWatch(file, seen);
+      return { wakeAgent: finished.length > 0, data: { finished } };
+    }
     default:
-      return fail('usage: search | has | request | pending | recent | approve | decline | cancel | releases | grab | link (see the header of bookorbit.ts)');
+      return fail('usage: search | has | request | pending | recent | approve | decline | cancel | releases | grab | link | watch (see the header of bookorbit.ts)');
   }
 }
 
 if (import.meta.main) {
   main(process.argv.slice(2))
-    .then((out) => console.log(JSON.stringify(out, null, 2)))
+    .then((out) => console.log(process.argv[2] === 'watch' ? JSON.stringify(out) : JSON.stringify(out, null, 2)))
     .catch((e) => {
       console.error(`error: ${e.message}`);
       process.exit(1);

@@ -83,6 +83,36 @@ group('shelfmark', () => {
     expect(mine.downloads.map((d: any) => d.title)).toEqual(['Iron Flame']);
   });
 
+  it('watch wakes only for downloads that finished or failed since the last check', async () => {
+    const os = await import('node:os');
+    const fs = await import('node:fs');
+    const state = `${fs.mkdtempSync(`${os.tmpdir()}/smw-`)}/w.json`;
+    const run = async (status: any) => main(['watch', '--state', state], fake({ 'GET /status': status }).f, CFG) as Promise<any>;
+    // first run only records what is there
+    expect(await run({ downloading: { a: { title: 'Walk the Wire', username: 'abhijeet' } }, complete: { old: { title: 'Old' } } })).toEqual({
+      wakeAgent: false,
+      data: { finished: [] },
+    });
+    // nothing changed
+    expect((await run({ downloading: { a: { title: 'Walk the Wire' } }, complete: { old: { title: 'Old' } } })).wakeAgent).toBe(false);
+    // a finished, b started and failed between checks, old stays quiet
+    const out = await run({
+      complete: { a: { title: 'Walk the Wire', username: 'abhijeet', content_type: 'ebook' }, old: { title: 'Old' } },
+      error: { b: { title: 'Long Shadows', username: 'abhijeet', last_error_message: 'no mirror' } },
+    });
+    expect(out).toEqual({
+      wakeAgent: true,
+      data: {
+        finished: [
+          { title: 'Walk the Wire', for: 'abhijeet', kind: 'ebook', state: 'done', note: undefined },
+          { title: 'Long Shadows', for: 'abhijeet', kind: undefined, state: 'failed', note: 'no mirror' },
+        ],
+      },
+    });
+    // reported once only
+    expect((await run({ complete: { a: { title: 'Walk the Wire' } }, error: { b: { title: 'Long Shadows' } } })).wakeAgent).toBe(false);
+  });
+
   it('reports Shelfmark errors plainly', async () => {
     const { f } = fake({ 'GET /status': { status: 401, body: { error: 'Unauthorized' } } });
     await expect(main(['status'], f, CFG)).rejects.toThrow('Shelfmark GET /status -> 401: Unauthorized');

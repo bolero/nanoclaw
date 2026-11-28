@@ -9,6 +9,10 @@
  *   bun shelfmark.ts search <title...> [--author <name>] [--kind ebook|audiobook] [--source <name>]
  *   bun shelfmark.ts download <source> <sourceId> --title <t> [--author <a>] --kind ebook|audiobook --for <first name>
  *   bun shelfmark.ts status [--for <first name>]      what is queued, downloading, done or failed
+ *   bun shelfmark.ts watch [--state <file>]             pre-task gate: wakes the agent only when a download
+ *       finished or failed since the last check. Prints one line {"wakeAgent": bool, "data": {...}}.
+ *       State: --state, $SHELFMARK_WATCH_STATE or /workspace/agent/state/shelfmark-watch.json. The first
+ *       run only records what is there. A download that starts and ends between two checks still counts.
  *
  * Ebooks search Direct Download by default, audiobooks Prowlarr. `download` repeats the search and
  * queues the release with that sourceId, so pass the same title, author and kind as the search.
@@ -197,14 +201,47 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config
       }
       return { downloads: items };
     }
+    case 'watch': {
+      const file = opts.state ?? process.env.SHELFMARK_WATCH_STATE ?? '/workspace/agent/state/shelfmark-watch.json';
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      let prev: Record<string, string> | undefined;
+      try {
+        prev = JSON.parse(fs.readFileSync(file, 'utf8')).seen;
+      } catch {
+        prev = undefined;
+      }
+      const res = ((await c.get('/status')) ?? {}) as Record<string, any>;
+      const seen: Record<string, string> = {};
+      const finished: any[] = [];
+      for (const [state, tasks] of Object.entries(res)) {
+        for (const [id, t] of Object.entries((tasks ?? {}) as Record<string, any>)) {
+          seen[id] = state;
+          const final = state === 'complete' || state === 'error';
+          const was = prev?.[id];
+          if (prev && final && was !== state && was !== 'complete' && was !== 'error') {
+            finished.push({
+              title: short(t.title),
+              for: t.username ?? undefined,
+              kind: t.content_type ?? undefined,
+              state: STATE[state],
+              note: state === 'error' ? short(t.last_error_message ?? t.status_message, 200) || undefined : undefined,
+            });
+          }
+        }
+      }
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ checked: new Date().toISOString(), seen }));
+      return { wakeAgent: finished.length > 0, data: { finished } };
+    }
     default:
-      return fail('usage: search | download | status (see the header of shelfmark.ts)');
+      return fail('usage: search | download | status | watch (see the header of shelfmark.ts)');
   }
 }
 
 if (import.meta.main) {
   main(process.argv.slice(2))
-    .then((out) => console.log(JSON.stringify(out, null, 2)))
+    .then((out) => console.log(process.argv[2] === 'watch' ? JSON.stringify(out) : JSON.stringify(out, null, 2)))
     .catch((e) => {
       console.error(`error: ${e.message}`);
       process.exit(1);
