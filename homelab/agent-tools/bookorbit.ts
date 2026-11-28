@@ -7,6 +7,8 @@
  * tool right after filing, because a parent asked for it.
  *
  *   bun bookorbit.ts search <title...> [--author <name>] [--kind audiobook|ebook] [--for <first name>]
+ *   bun bookorbit.ts has <title...> [--author <name>] [--for <first name>]   what the family libraries
+ *                                                already hold (all libraries, or that person's)
  *   bun bookorbit.ts request <provider> <providerId> --for <first name> --kind audiobook|ebook|both
  *   bun bookorbit.ts pending                     requests waiting for a parent
  *   bun bookorbit.ts recent [--take 10]          latest requests and where they are
@@ -379,6 +381,30 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config
       if (!q) fail('usage: search <title> [--author <name>] [--kind audiobook|ebook] [--for <first name>]');
       return search(c, cfg, q, opts);
     }
+    case 'has': {
+      const q = rest.join(' ').trim();
+      if (!q) fail('usage: has <title> [--author <name>] [--for <first name>]');
+      const person = opts.for ? findPerson(cfg, opts.for) : null;
+      const hits = (await c.get(`/books/search?${new URLSearchParams({ q })}`)) ?? [];
+      const surname = norm(opts.author).split(' ').pop() ?? '';
+      const books = (Array.isArray(hits) ? hits : (hits.items ?? []))
+        .filter((b: any) => !person || b.libraryId === person.libraryId)
+        .filter((b: any) => !surname || norm((b.authors ?? []).join(' ')).split(' ').includes(surname))
+        .slice(0, 10)
+        .map((b: any) => {
+          const formats: string[] = (b.formats ?? []).map((f: string) => String(f).toLowerCase());
+          return {
+            title: b.title,
+            authors: (b.authors ?? []).join(', '),
+            library: b.libraryName ?? b.libraryId,
+            ebook: formats.some((f) => !AUDIO_FORMATS.has(f)) || undefined,
+            audiobook: formats.some((f) => AUDIO_FORMATS.has(f)) || undefined,
+            formats: formats.join(', '),
+            series: b.seriesName ?? undefined,
+          };
+        });
+      return { query: q, for: person?.name, found: books.length > 0, books };
+    }
     case 'request': {
       const [provider, providerId] = rest;
       if (!provider || !providerId) fail('usage: request <provider> <providerId> --for <name> --kind audiobook|ebook|both');
@@ -475,7 +501,7 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config
       return { done: true, dockFile: hit.fileName, dockStatus: hit.status, ...describe(r.request ?? r) };
     }
     default:
-      return fail('usage: search | request | pending | recent | approve | decline | cancel | releases | grab | link (see the header of bookorbit.ts)');
+      return fail('usage: search | has | request | pending | recent | approve | decline | cancel | releases | grab | link (see the header of bookorbit.ts)');
   }
 }
 

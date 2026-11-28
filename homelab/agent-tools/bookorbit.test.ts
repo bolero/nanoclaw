@@ -381,3 +381,27 @@ group('already in their library', () => {
     expect(out.results[0].inTheirLibrary).toBeUndefined();
   });
 });
+
+group('has', () => {
+  const lib = [
+    { id: 1, title: 'Exit Strategy', authors: ['Lee Child, Andrew Child'], libraryId: 1, libraryName: 'Abhijeet', formats: ['epub', 'mp3'] },
+    { id: 2, title: 'Exit Strategy', authors: ['Lee Child, Andrew Child'], libraryId: 10, libraryName: 'Anika', formats: ['m4b'] },
+    { id: 3, title: 'Exit Strategy', authors: ['Someone Else'], libraryId: 11, libraryName: 'Bavya', formats: ['pdf'] },
+  ];
+  it('lists every family copy with its formats, filtered by author', async () => {
+    const { f, calls } = fake({ 'GET /books/search': lib });
+    const out: any = await main(['has', 'Exit', 'Strategy', '--author', 'Lee Child'], f, CFG);
+    expect(calls[0].url).toBe('/books/search?q=Exit+Strategy');
+    expect(out.books).toEqual([
+      { title: 'Exit Strategy', authors: 'Lee Child, Andrew Child', library: 'Abhijeet', ebook: true, audiobook: true, formats: 'epub, mp3', series: undefined },
+      { title: 'Exit Strategy', authors: 'Lee Child, Andrew Child', library: 'Anika', ebook: undefined, audiobook: true, formats: 'm4b', series: undefined },
+    ]);
+  });
+  it('narrows to one person, and says when nothing is there', async () => {
+    const { f } = fake({ 'GET /books/search': lib });
+    const out: any = await main(['has', 'Exit Strategy', '--for', 'anika'], f, CFG);
+    expect(out.books.map((b: any) => b.library)).toEqual(['Anika']);
+    const none: any = await main(['has', 'Exit Strategy', '--for', 'bavya', '--author', 'Lee Child'], f, CFG);
+    expect(none).toMatchObject({ found: false, books: [] });
+  });
+});
