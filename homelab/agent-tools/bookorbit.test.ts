@@ -98,15 +98,33 @@ group('bookorbit tool', () => {
     expect(calls[1].body.items).toHaveLength(2);
   });
 
-  it('files an audiobook for a person into their library', async () => {
+  it('files an audiobook for a child into her library and approves it', async () => {
     const { f, calls } = fake({
       'GET /metadata-fetch/lookup': CAND,
       'POST /book-requests': { request: REQ(), subscribed: false },
+      'POST /admin/book-requests/7/approve': REQ({ status: 'approved' }),
     });
     const out: any = await main(['request', 'audible', 'B0ABC', '--for', 'Anika', '--kind', 'audiobook'], f, CFG);
     expect(calls[0].url).toBe('/metadata-fetch/lookup?provider=audible&id=B0ABC');
     expect(calls[1].body).toMatchObject({ userId: 2, mediaKind: 'audiobook', targetLibraryId: 10, title: 'The Wild Robot' });
-    expect(out).toMatchObject({ done: true, for: 'Anika', requestId: 7, status: 'waiting for a parent' });
+    expect(calls[2]).toMatchObject({ method: 'POST', url: '/admin/book-requests/7/approve', body: {} });
+    expect(out).toMatchObject({ done: true, for: 'Anika', requestId: 7, library: 'Anika', status: 'approved, looking for a download' });
+  });
+
+  it('does not approve a parent request again, or one that joined an existing request', async () => {
+    const { f, calls } = fake({
+      'GET /metadata-fetch/lookup': CAND,
+      'POST /book-requests': { request: REQ({ status: 'approved', requesterName: 'Abhijeet', targetLibraryName: 'Abhijeet' }), subscribed: false },
+    });
+    const out: any = await main(['request', 'audible', 'B0ABC', '--for', 'abhijeet', '--kind', 'ebook'], f, CFG);
+    expect(calls[1].body).toMatchObject({ userId: 1, mediaKind: 'ebook', targetLibraryId: 1 });
+    expect(calls).toHaveLength(2);
+    expect(out.status).toBe('approved, looking for a download');
+
+    const j = fake({ 'GET /metadata-fetch/lookup': CAND, 'POST /book-requests': { request: REQ(), subscribed: true } });
+    const out2: any = await main(['request', 'audible', 'B0ABC', '--for', 'anika', '--kind', 'audiobook'], j.f, CFG);
+    expect(j.calls).toHaveLength(2);
+    expect(out2.joinedExisting).toBe(true);
   });
 
   it('files both formats as a pair', async () => {
@@ -119,8 +137,25 @@ group('bookorbit tool', () => {
     });
     const out: any = await main(['request', 'audible', 'B0ABC', '--for', 'bavya', '--kind', 'both'], f, CFG);
     expect(calls[1].body).toMatchObject({ userId: 4, ebook: { targetLibraryId: 11 }, audiobook: { targetLibraryId: 11 } });
+    expect(calls).toHaveLength(2);
     expect(out.ebook.requestId).toBe(8);
     expect(out.audiobook.joinedExisting).toBe(true);
+  });
+
+  it('approves both halves of a pair for a child', async () => {
+    const { f, calls } = fake({
+      'GET /metadata-fetch/lookup': CAND,
+      'POST /book-requests/pairs': {
+        ebook: { request: REQ({ id: 8, mediaKind: 'ebook' }), subscribed: false },
+        audiobook: { request: REQ({ id: 9 }), subscribed: false },
+      },
+      'POST /admin/book-requests/8/approve': REQ({ id: 8, mediaKind: 'ebook', status: 'approved' }),
+      'POST /admin/book-requests/9/approve': REQ({ id: 9, status: 'approved' }),
+    });
+    const out: any = await main(['request', 'audible', 'B0ABC', '--for', 'anika', '--kind', 'both'], f, CFG);
+    expect(calls.map((c) => c.url).slice(2)).toEqual(['/admin/book-requests/8/approve', '/admin/book-requests/9/approve']);
+    expect(out.ebook.status).toBe('approved, looking for a download');
+    expect(out.audiobook.status).toBe('approved, looking for a download');
   });
 
   it('requires --kind and --for', async () => {

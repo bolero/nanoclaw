@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 /**
- * BookOrbit: ebook and audiobook requests for the family. The OneCLI proxy adds the API key (owner's
- * account, scoped to requesting, auto-approve and managing requests), so this tool holds no secret.
- * A request is filed in the named person's name and lands in that person's own library; BookOrbit's
- * own rules decide whether it is approved straight away (parents) or waits for a parent (kids).
+ * BookOrbit: ebook and audiobook requests for the family, made by a parent. The OneCLI proxy adds
+ * the API key (owner's account, scoped to requesting, auto-approve and managing requests), so this
+ * tool holds no secret. A request is filed in the named person's name and lands in that person's own
+ * library. Parents' requests are approved by BookOrbit itself; one for a child is approved by this
+ * tool right after filing, because a parent asked for it.
  *
  *   bun bookorbit.ts search <title...> [--author <name>] [--kind audiobook|ebook]
  *   bun bookorbit.ts request <provider> <providerId> --for <first name> --kind audiobook|ebook|both
@@ -259,18 +260,23 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config
       const cand = await c.get(`/metadata-fetch/lookup?${new URLSearchParams({ provider, id: providerId })}`);
       if (!cand) fail(`no book ${provider}:${providerId} (search again)`);
       const work = { ...workPayload(cand), userId: person.userId };
+      // A parent asked, so a request that BookOrbit parks for approval (a child has no
+      // auto-approve) is approved straight away. The approval keeps the child's own library.
+      const settle = async (res: any) => {
+        let req = res.request;
+        if (req.status === 'pending' && !res.subscribed) {
+          const a = await c.post(`/admin/book-requests/${req.id}/approve`, {});
+          req = a.request ?? a;
+        }
+        return { ...describe(req), joinedExisting: res.subscribed || undefined };
+      };
       if (kind === 'both') {
         const half = { targetLibraryId: person.libraryId };
         const r = await c.post('/book-requests/pairs', { ...work, ebook: half, audiobook: half });
-        return {
-          done: true,
-          for: person.name,
-          ebook: { ...describe(r.ebook.request), joinedExisting: r.ebook.subscribed || undefined },
-          audiobook: { ...describe(r.audiobook.request), joinedExisting: r.audiobook.subscribed || undefined },
-        };
+        return { done: true, for: person.name, ebook: await settle(r.ebook), audiobook: await settle(r.audiobook) };
       }
       const r = await c.post('/book-requests', { ...work, mediaKind: kind, targetLibraryId: person.libraryId, preferredFormats: [] });
-      return { done: true, ...describe(r.request), joinedExisting: r.subscribed || undefined };
+      return { done: true, ...(await settle(r)) };
     }
     case 'pending': {
       const res = await c.get('/admin/book-requests?status=pending&limit=20&sortBy=createdAt&sortDir=desc');
