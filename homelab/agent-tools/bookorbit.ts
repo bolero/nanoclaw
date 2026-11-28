@@ -12,6 +12,13 @@
  *   bun bookorbit.ts recent [--take 10]          latest requests and where they are
  *   bun bookorbit.ts approve <requestId>         only when a parent asks
  *   bun bookorbit.ts decline <requestId>         only when a parent asks
+ *   bun bookorbit.ts releases <requestId> [--refresh yes]       ranked downloads for a request
+ *   bun bookorbit.ts grab <requestId> <indexerId> <guid>        download the release a parent chose
+ *   bun bookorbit.ts link <requestId>            after a Shelfmark download, close the request with
+ *                                                the file in the person's Library Dock
+ *
+ * After a request is approved the tool looks for releases: one scoring AUTO_GRAB_SCORE or more is
+ * grabbed straight away, otherwise the top three come back as `choices` (or `tryShelfmark`).
  *
  * Config: bookorbit.json next to this file: {"url": "...", "people": {"<first name>": {"userId": N,
  * "libraryId": N}}}. $BOOKORBIT_URL overrides the url. Output is JSON.
@@ -189,6 +196,58 @@ export function workPayload(c: any) {
   };
 }
 
+/** BookOrbit's own auto-grab threshold; a release at or above it is grabbed without asking. */
+export const AUTO_GRAB_SCORE = 80;
+const GRABBABLE = new Set(['approved', 'searching', 'failed']);
+
+const idArg = (v: string | undefined, usage: string) => {
+  const id = Number(v);
+  if (!Number.isInteger(id) || id <= 0) fail(`usage: ${usage}`);
+  return id;
+};
+
+export function rankReleases(list: any[]) {
+  return list.filter((r) => !r.alreadyGrabbed).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+}
+
+export function describeRelease(r: any) {
+  return {
+    indexerId: r.indexerId,
+    guid: r.guid,
+    title: short(r.title, 120),
+    indexer: r.indexerName,
+    format: r.format || (r.formats ?? []).join('/') || undefined,
+    sizeMB: r.sizeBytes ? Math.round(r.sizeBytes / 1e6) : undefined,
+    seeders: r.seeders ?? undefined,
+    language: r.language ?? undefined,
+    score: r.score,
+    profileMismatch: r.profileMismatch ? true : undefined,
+  };
+}
+
+/**
+ * After approval: look for releases, grab the best one if it scores at least AUTO_GRAB_SCORE,
+ * otherwise hand back the top three for a parent to choose (or none, so Shelfmark can be tried).
+ * A search failure is reported, never thrown, so the request itself still counts as filed.
+ */
+export async function fetchFor(c: Client, req: any): Promise<Record<string, unknown>> {
+  if (!GRABBABLE.has(req.status)) return {};
+  try {
+    const res = await c.get(`/admin/book-requests/${req.id}/releases`);
+    const ranked = rankReleases(res.releases ?? []);
+    const best = ranked[0];
+    if (best && (best.score ?? 0) >= AUTO_GRAB_SCORE) {
+      const g = await c.post(`/admin/book-requests/${req.id}/grab`, { indexerId: best.indexerId, releaseGuid: best.guid });
+      const after = g.request ?? g;
+      return { grabbed: describeRelease(best), status: STATUS[after.status] ?? after.status };
+    }
+    if (!ranked.length) return { download: 'no releases found', tryShelfmark: true };
+    return { download: 'choose a release', choices: ranked.slice(0, 3).map(describeRelease) };
+  } catch (e: any) {
+    return { download: `release search failed: ${e.message}` };
+  }
+}
+
 async function search(c: Client, q: string, opts: Record<string, string>) {
   const kind = (opts.kind ?? 'audiobook') as Kind;
   if (kind !== 'audiobook' && kind !== 'ebook') fail('--kind must be audiobook or ebook');
@@ -268,7 +327,7 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config
           const a = await c.post(`/admin/book-requests/${req.id}/approve`, {});
           req = a.request ?? a;
         }
-        return { ...describe(req), joinedExisting: res.subscribed || undefined };
+        return { ...describe(req), joinedExisting: res.subscribed || undefined, ...(await fetchFor(c, req)) };
       };
       if (kind === 'both') {
         const half = { targetLibraryId: person.libraryId };
@@ -292,10 +351,44 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config
       const id = Number(rest[0]);
       if (!Number.isInteger(id) || id <= 0) fail(`usage: ${cmd} <requestId>`);
       const r = await c.post(`/admin/book-requests/${id}/${cmd === 'approve' ? 'approve' : 'reject'}`, {});
+      const req = r.request ?? r;
+      return { done: true, ...describe(req), ...(cmd === 'approve' ? await fetchFor(c, req) : {}) };
+    }
+    case 'releases': {
+      const id = idArg(rest[0], 'releases <requestId>');
+      const res = await c.get(`/admin/book-requests/${id}/releases${opts.refresh === 'yes' ? '?refresh=true' : ''}`);
+      return { requestId: id, releases: rankReleases(res.releases ?? []).slice(0, 5).map(describeRelease) };
+    }
+    case 'grab': {
+      const id = idArg(rest[0], 'grab <requestId> <indexerId> <guid>');
+      const indexerId = Number(rest[1]);
+      const guid = rest.slice(2).join(' ');
+      if (!Number.isInteger(indexerId) || !guid) fail('usage: grab <requestId> <indexerId> <guid> (from releases)');
+      const r = await c.post(`/admin/book-requests/${id}/grab`, { indexerId, releaseGuid: guid });
       return { done: true, ...describe(r.request ?? r) };
     }
+    case 'link': {
+      // After a Shelfmark download: find the file in the person's Library Dock and close the
+      // request with it, so BookOrbit shows the request as done.
+      const id = idArg(rest[0], 'link <requestId>');
+      const req = await c.get(`/book-requests/${id}`);
+      if (req.status === 'available') return { done: true, already: true, ...describe(req) };
+      const qs = new URLSearchParams({ search: req.title, limit: '20', sort: 'createdAt', order: 'desc' });
+      const files = (await c.get(`/book-dock/files?${qs}`)).items ?? [];
+      const since = Date.parse(req.createdAt);
+      const want = norm(req.title);
+      const hit = files.find(
+        (f: any) =>
+          (req.targetLibraryId == null || f.targetLibraryId === req.targetLibraryId) &&
+          Date.parse(f.createdAt) >= since - 60_000 &&
+          [f.selectedMetadata?.title, f.fetchedMetadata?.title, f.embeddedMetadata?.title, f.fileName].some((t) => norm(t ?? '').includes(want)),
+      );
+      if (!hit) return { done: false, ...describe(req), reason: 'not in the Library Dock yet' };
+      const r = await c.post(`/admin/book-requests/${id}/fulfill`, { bookDockFileId: hit.id, note: opts.note ?? 'Downloaded with Shelfmark' });
+      return { done: true, dockFile: hit.fileName, dockStatus: hit.status, ...describe(r.request ?? r) };
+    }
     default:
-      return fail('usage: search | request | pending | recent | approve | decline (see the header of bookorbit.ts)');
+      return fail('usage: search | request | pending | recent | approve | decline | releases | grab | link (see the header of bookorbit.ts)');
   }
 }
 

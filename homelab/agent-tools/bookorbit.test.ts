@@ -115,11 +115,12 @@ group('bookorbit tool', () => {
     const { f, calls } = fake({
       'GET /metadata-fetch/lookup': CAND,
       'POST /book-requests': { request: REQ({ status: 'approved', requesterName: 'Abhijeet', targetLibraryName: 'Abhijeet' }), subscribed: false },
+      'GET /admin/book-requests/7/releases': { releases: [] },
     });
     const out: any = await main(['request', 'audible', 'B0ABC', '--for', 'abhijeet', '--kind', 'ebook'], f, CFG);
     expect(calls[1].body).toMatchObject({ userId: 1, mediaKind: 'ebook', targetLibraryId: 1 });
-    expect(calls).toHaveLength(2);
-    expect(out.status).toBe('approved, looking for a download');
+    expect(calls.map((c) => c.url)).not.toContain('/admin/book-requests/7/approve');
+    expect(out).toMatchObject({ status: 'approved, looking for a download', download: 'no releases found', tryShelfmark: true });
 
     const j = fake({ 'GET /metadata-fetch/lookup': CAND, 'POST /book-requests': { request: REQ(), subscribed: true } });
     const out2: any = await main(['request', 'audible', 'B0ABC', '--for', 'anika', '--kind', 'audiobook'], j.f, CFG);
@@ -137,7 +138,7 @@ group('bookorbit tool', () => {
     });
     const out: any = await main(['request', 'audible', 'B0ABC', '--for', 'bavya', '--kind', 'both'], f, CFG);
     expect(calls[1].body).toMatchObject({ userId: 4, ebook: { targetLibraryId: 11 }, audiobook: { targetLibraryId: 11 } });
-    expect(calls).toHaveLength(2);
+    expect(calls.some((c) => c.url.endsWith('/approve'))).toBe(false);
     expect(out.ebook.requestId).toBe(8);
     expect(out.audiobook.joinedExisting).toBe(true);
   });
@@ -153,9 +154,98 @@ group('bookorbit tool', () => {
       'POST /admin/book-requests/9/approve': REQ({ id: 9, status: 'approved' }),
     });
     const out: any = await main(['request', 'audible', 'B0ABC', '--for', 'anika', '--kind', 'both'], f, CFG);
-    expect(calls.map((c) => c.url).slice(2)).toEqual(['/admin/book-requests/8/approve', '/admin/book-requests/9/approve']);
+    const approvals = calls.map((c) => c.url).filter((u) => u.endsWith('/approve'));
+    expect(approvals).toEqual(['/admin/book-requests/8/approve', '/admin/book-requests/9/approve']);
     expect(out.ebook.status).toBe('approved, looking for a download');
     expect(out.audiobook.status).toBe('approved, looking for a download');
+  });
+
+  const REL = (over: Record<string, any> = {}) => ({
+    indexerId: 3,
+    indexerName: 'NZBgeek',
+    guid: 'g-1',
+    title: 'Peter Brown - The Wild Robot (2016) [m4b]',
+    sizeBytes: 412_000_000,
+    seeders: null,
+    format: 'm4b',
+    formats: ['m4b'],
+    alreadyGrabbed: false,
+    score: 91,
+    profileMismatch: null,
+    ...over,
+  });
+
+  it('grabs the best release when it scores 80 or more', async () => {
+    const { f, calls } = fake({
+      'GET /metadata-fetch/lookup': CAND,
+      'POST /book-requests': { request: REQ(), subscribed: false },
+      'POST /admin/book-requests/7/approve': REQ({ status: 'approved' }),
+      'GET /admin/book-requests/7/releases': {
+        releases: [REL({ guid: 'low', score: 60 }), REL({ guid: 'used', score: 99, alreadyGrabbed: true }), REL()],
+      },
+      'POST /admin/book-requests/7/grab': REQ({ status: 'grabbed' }),
+    });
+    const out: any = await main(['request', 'audible', 'B0ABC', '--for', 'anika', '--kind', 'audiobook'], f, CFG);
+    expect(calls.at(-1)).toMatchObject({ url: '/admin/book-requests/7/grab', body: { indexerId: 3, releaseGuid: 'g-1' } });
+    expect(out).toMatchObject({ status: 'download found', grabbed: { guid: 'g-1', sizeMB: 412, score: 91 } });
+  });
+
+  it('offers the top three when nothing scores 80, and grabs the chosen one', async () => {
+    const releases = [REL({ guid: 'a', score: 70 }), REL({ guid: 'b', score: 75 }), REL({ guid: 'c', score: 40 }), REL({ guid: 'd', score: 10 })];
+    const { f, calls } = fake({
+      'GET /metadata-fetch/lookup': CAND,
+      'POST /book-requests': { request: REQ({ status: 'approved' }), subscribed: false },
+      'GET /admin/book-requests/7/releases': { releases },
+      'POST /admin/book-requests/7/grab': REQ({ status: 'grabbed' }),
+    });
+    const out: any = await main(['request', 'audible', 'B0ABC', '--for', 'bavya', '--kind', 'audiobook'], f, CFG);
+    expect(out.download).toBe('choose a release');
+    expect(out.choices.map((r: any) => r.guid)).toEqual(['b', 'a', 'c']);
+    expect(calls.some((c) => c.url.endsWith('/grab'))).toBe(false);
+
+    const g: any = await main(['grab', '7', '3', 'b'], f, CFG);
+    expect(calls.at(-1)).toMatchObject({ url: '/admin/book-requests/7/grab', body: { indexerId: 3, releaseGuid: 'b' } });
+    expect(g).toMatchObject({ done: true, status: 'download found' });
+  });
+
+  it('still reports the request when the release search fails', async () => {
+    const { f } = fake({
+      'GET /metadata-fetch/lookup': CAND,
+      'POST /book-requests': { request: REQ({ status: 'approved' }), subscribed: false },
+      'GET /admin/book-requests/7/releases': { status: 502, body: { message: 'Prowlarr is down' } },
+    });
+    const out: any = await main(['request', 'audible', 'B0ABC', '--for', 'bavya', '--kind', 'audiobook'], f, CFG);
+    expect(out).toMatchObject({ done: true, requestId: 7 });
+    expect(out.download).toMatch(/release search failed: .*502: Prowlarr is down/);
+  });
+
+  it('lists releases for a request', async () => {
+    const { f, calls } = fake({ 'GET /admin/book-requests/7/releases': { releases: [REL({ guid: 'x', score: 50 }), REL()] } });
+    const out: any = await main(['releases', '7', '--refresh', 'yes'], f, CFG);
+    expect(calls[0].url).toBe('/admin/book-requests/7/releases?refresh=true');
+    expect(out.releases.map((r: any) => r.guid)).toEqual(['g-1', 'x']);
+  });
+
+  it('links a Shelfmark download in the right dock to its request', async () => {
+    const req = REQ({ id: 7, status: 'approved', targetLibraryId: 10, createdAt: '2026-11-27T10:00:00Z' });
+    const { f, calls } = fake({
+      'GET /book-requests/7': req,
+      'GET /book-dock/files': {
+        items: [
+          { id: 40, fileName: 'Wild Robot.epub', status: 'filed', targetLibraryId: 1, createdAt: '2026-11-27T10:05:00Z', selectedMetadata: { title: 'The Wild Robot' } },
+          { id: 41, fileName: 'Wild Robot.epub', status: 'filed', targetLibraryId: 10, createdAt: '2026-11-26T10:05:00Z', selectedMetadata: { title: 'The Wild Robot' } },
+          { id: 42, fileName: 'Peter Brown - The Wild Robot.epub', status: 'filed', targetLibraryId: 10, createdAt: '2026-11-27T10:06:00Z', selectedMetadata: null },
+        ],
+      },
+      'POST /admin/book-requests/7/fulfill': REQ({ status: 'available' }),
+    });
+    const out: any = await main(['link', '7'], f, CFG);
+    expect(calls[1].url).toContain('search=The+Wild+Robot');
+    expect(calls.at(-1)).toMatchObject({ url: '/admin/book-requests/7/fulfill', body: { bookDockFileId: 42 } });
+    expect(out).toMatchObject({ done: true, status: 'in the library', dockFile: 'Peter Brown - The Wild Robot.epub' });
+
+    const none = fake({ 'GET /book-requests/7': req, 'GET /book-dock/files': { items: [] } });
+    expect(await main(['link', '7'], none.f, CFG)).toMatchObject({ done: false, reason: 'not in the Library Dock yet' });
   });
 
   it('requires --kind and --for', async () => {
