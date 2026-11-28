@@ -1,6 +1,6 @@
 import { describe as group, expect, it } from 'bun:test';
 
-import { type Config, findPerson, main, parseArgs, workPayload } from './bookorbit.ts';
+import { type Config, cleanTitle, findPerson, lookalike, main, parseArgs, workPayload } from './bookorbit.ts';
 
 type Call = { method: string; url: string; body?: any };
 
@@ -271,5 +271,56 @@ group('bookorbit tool', () => {
   it('reports API errors with the message', async () => {
     const { f } = fake({ 'GET /admin/book-requests': { status: 403, body: { message: 'This API key is read-only' } } });
     await expect(main(['recent'], f, CFG)).rejects.toThrow(/403: This API key is read-only/);
+  });
+});
+
+group('lookalike listings', () => {
+  it('spots mixed-script words and overlay marks, not plain accents or other languages', () => {
+    expect(lookalike('Peculiar Star\u0334s')).toBe(true);
+    expect(lookalike('R\u0435b\u0435\u0441\u0441a Yarros')).toBe(true);
+    expect(lookalike('Peculiar Stars – Zwischen uns die Welt')).toBe(false);
+    expect(lookalike('Les Misérables', 'Victor Hugo')).toBe(false);
+    expect(lookalike('Война и мир')).toBe(false);
+  });
+
+  it('hides them from search and refuses a request for one', async () => {
+    const fakeCand = { ...CAND, providerId: 'FAKE', authors: ['P\u0435ter Brown'] };
+    const { f } = fake({
+      'GET /metadata-fetch/stream': sse([`data: ${JSON.stringify(fakeCand)}`, `data: ${JSON.stringify(CAND)}`]),
+      'POST /book-requests/availability': [{}],
+      'GET /metadata-fetch/lookup': fakeCand,
+    });
+    const out: any = await main(['search', 'wild', 'robot'], f, CFG);
+    expect(out.results.map((r: any) => r.providerId)).toEqual(['B0ABC']);
+    expect(out.hiddenLookalikes).toBe(1);
+    await expect(main(['request', 'audible', 'FAKE', '--for', 'anika', '--kind', 'audiobook'], f, CFG)).rejects.toThrow(/lookalike/);
+  });
+
+  it('says why an approved knock-off request finds nothing', async () => {
+    const req = REQ({ status: 'pending', title: 'Peculiar Star\u0334s' });
+    const { f } = fake({
+      'POST /admin/book-requests/7/approve': { request: { ...req, status: 'approved' } },
+      'GET /admin/book-requests/7/releases': { releases: [] },
+    });
+    const out: any = await main(['approve', '7'], f, CFG);
+    expect(out.fakeListing).toMatch(/lookalike/);
+    expect(out.tryShelfmark).toBeUndefined();
+  });
+});
+
+group('titles', () => {
+  it('drops store padding', () => {
+    expect(cleanTitle('Peculiar Stars: A Novel (Unabridged)')).toBe('Peculiar Stars');
+    expect(cleanTitle('Onyx Storm [Abridged]')).toBe('Onyx Storm');
+    expect(cleanTitle('Novel Ideas: A Novel Approach')).toBe('Novel Ideas: A Novel Approach');
+  });
+});
+
+group('cancel', () => {
+  it('cancels an approved request and keeps any files', async () => {
+    const { f, calls } = fake({ 'POST /book-requests/7/cancel': { ...REQ({ status: 'cancelled' }) } });
+    const out: any = await main(['cancel', '7'], f, CFG);
+    expect(calls[0].body).toEqual({ deleteFiles: false });
+    expect(out).toMatchObject({ done: true, requestId: 7, status: 'cancelled' });
   });
 });

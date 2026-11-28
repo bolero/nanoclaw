@@ -11,7 +11,8 @@
  *   bun bookorbit.ts pending                     requests waiting for a parent
  *   bun bookorbit.ts recent [--take 10]          latest requests and where they are
  *   bun bookorbit.ts approve <requestId>         only when a parent asks
- *   bun bookorbit.ts decline <requestId>         only when a parent asks
+ *   bun bookorbit.ts decline <requestId>         only when a parent asks (pending requests)
+ *   bun bookorbit.ts cancel <requestId>          only when a parent asks (approved, not yet in the library)
  *   bun bookorbit.ts releases <requestId> [--refresh yes]       ranked downloads for a request
  *   bun bookorbit.ts grab <requestId> <indexerId> <guid>        download the release a parent chose
  *   bun bookorbit.ts link <requestId>            after a Shelfmark download, close the request with
@@ -19,6 +20,9 @@
  *
  * After a request is approved the tool looks for releases: one scoring AUTO_GRAB_SCORE or more is
  * grabbed straight away, otherwise the top three come back as `choices` (or `tryShelfmark`).
+ *
+ * Store listings whose title or author uses lookalike letters (knock-offs) are hidden from search
+ * and refused for a request; nothing can be downloaded for them.
  *
  * Config: bookorbit.json next to this file: {"url": "...", "people": {"<first name>": {"userId": N,
  * "libraryId": N}}}. $BOOKORBIT_URL overrides the url. Output is JSON.
@@ -71,6 +75,20 @@ const short = (s?: string, n = 160) => {
   const t = (s ?? '').replace(/\s+/g, ' ').trim();
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 };
+/**
+ * Knock-off store listings spell a real title or author with lookalike letters (Cyrillic "е" in a
+ * Latin word, a combining overlay such as "r̴"). Indexers then search for gibberish and nothing is
+ * ever found, so such a listing is hidden from search and refused for a request.
+ */
+export function lookalike(...texts: (string | undefined)[]): boolean {
+  return texts.some((t) => {
+    if (!t) return false;
+    if (/[\u0334-\u0338]/.test(t)) return true;
+    return t.split(/\s+/).some((w) => /[A-Za-z]/.test(w) && /[\u0370-\u03ff\u0400-\u04ff]/.test(w));
+  });
+}
+const candLookalike = (c: any) => lookalike(c?.title ?? c?.displayTitle, ...(c?.authors ?? []));
+
 const intOrNull = (v: unknown) => {
   const n = Number(v);
   return Number.isInteger(n) && n >= 0 ? n : null;
@@ -179,9 +197,17 @@ export function describe(r: any) {
   };
 }
 
+/** Store padding that indexers never use: "Title: A Novel (Unabridged)" becomes "Title". */
+export function cleanTitle(t?: string) {
+  return (t ?? '')
+    .replace(/\s*[([](un)?abridged( edition)?[)\]]\s*$/i, '')
+    .replace(/\s*:\s*a novel\s*$/i, '')
+    .trim();
+}
+
 export function workPayload(c: any) {
   return {
-    title: c.title ?? c.displayTitle,
+    title: cleanTitle(c.title ?? c.displayTitle),
     subtitle: c.subtitle ?? null,
     authors: c.authors ?? [],
     seriesName: c.seriesName ?? null,
@@ -241,7 +267,11 @@ export async function fetchFor(c: Client, req: any): Promise<Record<string, unkn
       const after = g.request ?? g;
       return { grabbed: describeRelease(best), status: STATUS[after.status] ?? after.status };
     }
-    if (!ranked.length) return { download: 'no releases found', tryShelfmark: true };
+    if (!ranked.length) {
+      if (candLookalike(req))
+        return { download: 'no releases found', fakeListing: 'the title or author uses lookalike letters; decline this request and request again from a clean search result' };
+      return { download: 'no releases found', tryShelfmark: true };
+    }
     return { download: 'choose a release', choices: ranked.slice(0, 3).map(describeRelease) };
   } catch (e: any) {
     return { download: `release search failed: ${e.message}` };
@@ -256,8 +286,13 @@ async function search(c: Client, q: string, opts: Record<string, string>) {
   const raw = await c.stream(`/metadata-fetch/stream?${qs}`, 25_000);
   const seen = new Set<string>();
   const picks: any[] = [];
+  let hidden = 0;
   for (const r of raw) {
     if (r.mediaKind && r.mediaKind !== kind) continue;
+    if (candLookalike(r)) {
+      hidden++;
+      continue;
+    }
     const key = `${norm(r.title ?? r.displayTitle)}|${norm(r.authors?.[0])}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -282,6 +317,7 @@ async function search(c: Client, q: string, opts: Record<string, string>) {
   return {
     query: q,
     kind,
+    hiddenLookalikes: hidden || undefined,
     results: picks.map((p, i) => ({
       provider: p.provider,
       providerId: String(p.providerId),
@@ -318,6 +354,7 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config
       const person = findPerson(cfg, opts.for);
       const cand = await c.get(`/metadata-fetch/lookup?${new URLSearchParams({ provider, id: providerId })}`);
       if (!cand) fail(`no book ${provider}:${providerId} (search again)`);
+      if (candLookalike(cand)) fail('that listing spells the title or author with lookalike letters (a knock-off); pick another search result');
       const work = { ...workPayload(cand), userId: person.userId };
       // A parent asked, so a request that BookOrbit parks for approval (a child has no
       // auto-approve) is approved straight away. The approval keeps the child's own library.
@@ -354,6 +391,11 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config
       const req = r.request ?? r;
       return { done: true, ...describe(req), ...(cmd === 'approve' ? await fetchFor(c, req) : {}) };
     }
+    case 'cancel': {
+      const id = idArg(rest[0], 'cancel <requestId>');
+      const r = await c.post(`/book-requests/${id}/cancel`, { deleteFiles: false });
+      return { done: true, ...describe(r.request ?? r) };
+    }
     case 'releases': {
       const id = idArg(rest[0], 'releases <requestId>');
       const res = await c.get(`/admin/book-requests/${id}/releases${opts.refresh === 'yes' ? '?refresh=true' : ''}`);
@@ -388,7 +430,7 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config
       return { done: true, dockFile: hit.fileName, dockStatus: hit.status, ...describe(r.request ?? r) };
     }
     default:
-      return fail('usage: search | request | pending | recent | approve | decline | releases | grab | link (see the header of bookorbit.ts)');
+      return fail('usage: search | request | pending | recent | approve | decline | cancel | releases | grab | link (see the header of bookorbit.ts)');
   }
 }
 
