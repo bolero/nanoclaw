@@ -244,8 +244,26 @@ group('bookorbit tool', () => {
     expect(calls.at(-1)).toMatchObject({ url: '/admin/book-requests/7/fulfill', body: { bookDockFileId: 42 } });
     expect(out).toMatchObject({ done: true, status: 'in the library', dockFile: 'Peter Brown - The Wild Robot.epub' });
 
-    const none = fake({ 'GET /book-requests/7': req, 'GET /book-dock/files': { items: [] } });
-    expect(await main(['link', '7'], none.f, CFG)).toMatchObject({ done: false, reason: 'not in the Library Dock yet' });
+    const none = fake({ 'GET /book-requests/7': req, 'GET /book-dock/files': { items: [] }, 'GET /books/search': [] });
+    expect(await main(['link', '7'], none.f, CFG)).toMatchObject({ done: false, reason: 'not in the Library Dock or the library yet' });
+  });
+
+  it('links a download that auto-file already moved into the library, ignoring the series tag', async () => {
+    const req = REQ({ id: 7, title: 'Walk the Wire (Amos Decker Book 6)', mediaKind: 'ebook', status: 'approved', targetLibraryId: 1 });
+    const { f, calls } = fake({
+      'GET /book-requests/7': req,
+      'GET /book-dock/files': { items: [] },
+      'GET /books/search': [
+        { id: 600, title: 'Walk the Wire', libraryId: 2, formats: ['epub'] },
+        { id: 610, title: 'Walk the Wire', libraryId: 1, formats: ['m4b'] },
+        { id: 611, title: 'Walk the Wire', libraryId: 1, formats: ['epub'] },
+      ],
+      'POST /admin/book-requests/7/fulfill': REQ({ id: 7, status: 'available' }),
+    });
+    const out: any = await main(['link', '7'], f, CFG);
+    expect(calls[1].url).toContain('search=Walk+the+Wire&');
+    expect(calls.at(-1)).toMatchObject({ url: '/admin/book-requests/7/fulfill', body: { matchedBookId: 611 } });
+    expect(out).toMatchObject({ done: true, libraryBook: 611, status: 'in the library' });
   });
 
   it('watch wakes once per request that reached the library or failed; link marks its own', async () => {

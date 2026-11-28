@@ -214,6 +214,11 @@ export function describe(r: any) {
   };
 }
 
+/** Title without store padding or a trailing series tag: "Walk the Wire (Amos Decker Book 6)" becomes "Walk the Wire". */
+export function baseTitle(t: string) {
+  return cleanTitle(t).replace(/\s*[([][^)\]]*[)\]]\s*$/, '').trim() || cleanTitle(t);
+}
+
 /** Store padding that indexers never use: "Title: A Novel (Unabridged)" becomes "Title". */
 export function cleanTitle(t?: string) {
   return (t ?? '')
@@ -508,26 +513,49 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config
       return { done: true, ...describe(r.request ?? r) };
     }
     case 'link': {
-      // After a Shelfmark download: find the file in the person's Library Dock and close the
-      // request with it, so BookOrbit shows the request as done.
+      // After a Shelfmark download: close the request with the downloaded book. BookOrbit's
+      // auto-file moves dock files into the library within moments, so look in the Library Dock
+      // first and then in the person's library.
       const id = idArg(rest[0], 'link <requestId>');
       const req = await c.get(`/book-requests/${id}`);
       if (req.status === 'available') return { done: true, already: true, ...describe(req) };
-      const qs = new URLSearchParams({ search: req.title, limit: '20', sort: 'createdAt', order: 'desc' });
+      const short = baseTitle(req.title);
+      const want = norm(short);
+      const same = (t?: string) => {
+        const n = norm(baseTitle(t ?? ''));
+        return n === want || n.startsWith(`${want} `) || norm(t ?? '').includes(want);
+      };
+      const qs = new URLSearchParams({ search: short, limit: '20', sort: 'createdAt', order: 'desc' });
       const files = (await c.get(`/book-dock/files?${qs}`)).items ?? [];
       const since = Date.parse(req.createdAt);
-      const want = norm(req.title);
       const hit = files.find(
         (f: any) =>
           (req.targetLibraryId == null || f.targetLibraryId === req.targetLibraryId) &&
           Date.parse(f.createdAt) >= since - 60_000 &&
-          [f.selectedMetadata?.title, f.fetchedMetadata?.title, f.embeddedMetadata?.title, f.fileName].some((t) => norm(t ?? '').includes(want)),
+          [f.selectedMetadata?.title, f.fetchedMetadata?.title, f.embeddedMetadata?.title, f.fileName].some(same),
       );
-      if (!hit) return { done: false, ...describe(req), reason: 'not in the Library Dock yet' };
-      const r = await c.post(`/admin/book-requests/${id}/fulfill`, { bookDockFileId: hit.id, note: opts.note ?? 'Downloaded with Shelfmark' });
+      const note = opts.note ?? 'Downloaded with Shelfmark';
+      let r: any;
+      let found: Record<string, unknown>;
+      if (hit) {
+        r = await c.post(`/admin/book-requests/${id}/fulfill`, { bookDockFileId: hit.id, note });
+        found = { dockFile: hit.fileName, dockStatus: hit.status };
+      } else {
+        const hits = (await c.get(`/books/search?${new URLSearchParams({ q: short })}`)) ?? [];
+        const audio = req.mediaKind === 'audiobook';
+        const book = (Array.isArray(hits) ? hits : (hits.items ?? [])).find(
+          (b: any) =>
+            (req.targetLibraryId == null || b.libraryId === req.targetLibraryId) &&
+            same(b.title) &&
+            (b.formats ?? []).some((f: string) => AUDIO_FORMATS.has(String(f).toLowerCase()) === audio),
+        );
+        if (!book) return { done: false, ...describe(req), reason: 'not in the Library Dock or the library yet' };
+        r = await c.post(`/admin/book-requests/${id}/fulfill`, { matchedBookId: book.id, note });
+        found = { libraryBook: book.id };
+      }
       const seen = await readWatch(watchFile(opts));
       if (seen) await writeWatch(watchFile(opts), { ...seen, [String(id)]: (r.request ?? r).status ?? 'available' });
-      return { done: true, dockFile: hit.fileName, dockStatus: hit.status, ...describe(r.request ?? r) };
+      return { done: true, ...found, ...describe(r.request ?? r) };
     }
     case 'check': {
       const id = idArg(rest[0], 'check <requestId>');
