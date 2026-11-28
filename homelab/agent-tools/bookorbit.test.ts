@@ -93,7 +93,7 @@ group('bookorbit tool', () => {
     const out: any = await main(['search', 'wild', 'robot'], f, CFG);
     expect(calls[0].url).toContain('mediaKind=audiobook');
     expect(out.results.map((r: any) => r.providerId)).toEqual(['B0ABC', 'B0DEF']);
-    expect(out.results[0]).toMatchObject({ inOwnersLibrary: true, narrators: 'Kate Atwater', hours: 4, series: 'The Wild Robot #1' });
+    expect(out.results[0]).toMatchObject({ inAFamilyLibrary: true, narrators: 'Kate Atwater', hours: 4, series: 'The Wild Robot #1' });
     expect(out.results[1].alreadyRequested).toBe('downloading');
     expect(calls[1].body.items).toHaveLength(2);
   });
@@ -106,8 +106,8 @@ group('bookorbit tool', () => {
     });
     const out: any = await main(['request', 'audible', 'B0ABC', '--for', 'Anika', '--kind', 'audiobook'], f, CFG);
     expect(calls[0].url).toBe('/metadata-fetch/lookup?provider=audible&id=B0ABC');
-    expect(calls[1].body).toMatchObject({ userId: 2, mediaKind: 'audiobook', targetLibraryId: 10, title: 'The Wild Robot' });
-    expect(calls[2]).toMatchObject({ method: 'POST', url: '/admin/book-requests/7/approve', body: {} });
+    expect(calls[2].body).toMatchObject({ userId: 2, mediaKind: 'audiobook', targetLibraryId: 10, title: 'The Wild Robot' });
+    expect(calls[3]).toMatchObject({ method: 'POST', url: '/admin/book-requests/7/approve', body: {} });
     expect(out).toMatchObject({ done: true, for: 'Anika', requestId: 7, library: 'Anika', status: 'approved, looking for a download' });
   });
 
@@ -118,13 +118,13 @@ group('bookorbit tool', () => {
       'GET /admin/book-requests/7/releases': { releases: [] },
     });
     const out: any = await main(['request', 'audible', 'B0ABC', '--for', 'abhijeet', '--kind', 'ebook'], f, CFG);
-    expect(calls[1].body).toMatchObject({ userId: 1, mediaKind: 'ebook', targetLibraryId: 1 });
+    expect(calls[2].body).toMatchObject({ userId: 1, mediaKind: 'ebook', targetLibraryId: 1 });
     expect(calls.map((c) => c.url)).not.toContain('/admin/book-requests/7/approve');
     expect(out).toMatchObject({ status: 'approved, looking for a download', download: 'no releases found', tryShelfmark: true });
 
     const j = fake({ 'GET /metadata-fetch/lookup': CAND, 'POST /book-requests': { request: REQ(), subscribed: true } });
     const out2: any = await main(['request', 'audible', 'B0ABC', '--for', 'anika', '--kind', 'audiobook'], j.f, CFG);
-    expect(j.calls).toHaveLength(2);
+    expect(j.calls).toHaveLength(3);
     expect(out2.joinedExisting).toBe(true);
   });
 
@@ -137,7 +137,7 @@ group('bookorbit tool', () => {
       },
     });
     const out: any = await main(['request', 'audible', 'B0ABC', '--for', 'bavya', '--kind', 'both'], f, CFG);
-    expect(calls[1].body).toMatchObject({ userId: 4, ebook: { targetLibraryId: 11 }, audiobook: { targetLibraryId: 11 } });
+    expect(calls[2].body).toMatchObject({ userId: 4, ebook: { targetLibraryId: 11 }, audiobook: { targetLibraryId: 11 } });
     expect(calls.some((c) => c.url.endsWith('/approve'))).toBe(false);
     expect(out.ebook.requestId).toBe(8);
     expect(out.audiobook.joinedExisting).toBe(true);
@@ -340,5 +340,44 @@ group('preferred formats', () => {
     const b = fake(routes);
     await main(['request', 'audible', 'B0ABC', '--for', 'anika', '--kind', 'audiobook'], b.f, { ...CFG, preferredFormats: { audiobook: ['mp3'] } });
     expect(b.calls.find((c) => c.url === '/book-requests')!.body.preferredFormats).toEqual(['mp3']);
+  });
+});
+
+group('already in their library', () => {
+  const base = {
+    'GET /metadata-fetch/lookup': CAND,
+    'POST /book-requests': { request: REQ({ status: 'approved', mediaKind: 'ebook' }) },
+    'GET /admin/book-requests/7/releases': { releases: [] },
+  };
+  it('files nothing when the person already has that format', async () => {
+    const { f, calls } = fake({ ...base, 'GET /books/search': [{ id: 1, title: 'The Wild Robot', authors: ['Peter Brown'], libraryId: 10, formats: ['m4b'] }] });
+    const out: any = await main(['request', 'audible', 'B0ABC', '--for', 'anika', '--kind', 'audiobook'], f, CFG);
+    expect(out).toMatchObject({ done: false, alreadyInLibrary: ['audiobook'] });
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+  it('for both, files only the missing half; copies in other libraries do not count', async () => {
+    const { f, calls } = fake({
+      ...base,
+      'GET /books/search': [
+        { id: 1, title: 'The Wild Robot', authors: ['Peter Brown'], libraryId: 10, formats: ['m4b'] },
+        { id: 2, title: 'The Wild Robot', authors: ['Peter Brown'], libraryId: 1, formats: ['epub'] },
+      ],
+    });
+    const out: any = await main(['request', 'audible', 'B0ABC', '--for', 'anika', '--kind', 'both'], f, CFG);
+    const post = calls.find((c) => c.method === 'POST')!;
+    expect(post.url).toBe('/book-requests');
+    expect(post.body.mediaKind).toBe('ebook');
+    expect(post.body.preferredFormats).toEqual(['epub']);
+    expect(out).toMatchObject({ done: true, alreadyInLibrary: ['audiobook'] });
+  });
+  it('search --for shows what the person already has', async () => {
+    const { f } = fake({
+      'GET /metadata-fetch/stream': sse([`data: ${JSON.stringify(CAND)}`]),
+      'POST /book-requests/availability': [{ ownedBookId: 2 }],
+      'GET /books/search': [{ id: 2, title: 'The Wild Robot', authors: ['Peter Brown'], libraryId: 1, formats: ['epub'] }],
+    });
+    const out: any = await main(['search', 'wild', 'robot', '--for', 'anika'], f, CFG);
+    expect(out.results[0]).toMatchObject({ inAFamilyLibrary: true });
+    expect(out.results[0].inTheirLibrary).toBeUndefined();
   });
 });

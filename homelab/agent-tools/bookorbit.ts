@@ -6,7 +6,7 @@
  * library. Parents' requests are approved by BookOrbit itself; one for a child is approved by this
  * tool right after filing, because a parent asked for it.
  *
- *   bun bookorbit.ts search <title...> [--author <name>] [--kind audiobook|ebook]
+ *   bun bookorbit.ts search <title...> [--author <name>] [--kind audiobook|ebook] [--for <first name>]
  *   bun bookorbit.ts request <provider> <providerId> --for <first name> --kind audiobook|ebook|both
  *   bun bookorbit.ts pending                     requests waiting for a parent
  *   bun bookorbit.ts recent [--take 10]          latest requests and where they are
@@ -20,6 +20,9 @@
  *
  * After a request is approved the tool looks for releases: one scoring AUTO_GRAB_SCORE or more is
  * grabbed straight away, otherwise the top three come back as `choices` (or `tryShelfmark`).
+ *
+ * Before filing, the tool checks the person's own library: a format they already have is not
+ * requested again (for "both", only the missing half is filed).
  *
  * Store listings whose title or author uses lookalike letters (knock-offs) are hidden from search
  * and refused for a request; nothing can be downloaded for them.
@@ -227,6 +230,26 @@ export function workPayload(c: any) {
   };
 }
 
+const AUDIO_FORMATS = new Set(['m4b', 'mp3', 'm4a', 'opus', 'ogg', 'flac']);
+
+/**
+ * Which formats the person already has of this book in their own library: 'ebook', 'audiobook'.
+ * BookOrbit only checks this itself for accounts with "see own requested books" on, so the tool
+ * looks first and never downloads a copy the person already has.
+ */
+export async function ownedKinds(c: Client, libraryId: number, title: string, author?: string): Promise<Set<Kind>> {
+  const want = norm(cleanTitle(title));
+  const surname = norm(author).split(' ').pop() ?? '';
+  const hits = (await c.get(`/books/search?${new URLSearchParams({ q: cleanTitle(title) })}`)) ?? [];
+  const kinds = new Set<Kind>();
+  for (const b of Array.isArray(hits) ? hits : (hits.items ?? [])) {
+    if (b.libraryId !== libraryId || norm(cleanTitle(b.title)) !== want) continue;
+    if (surname && !norm((b.authors ?? []).join(' ')).split(' ').includes(surname)) continue;
+    for (const f of b.formats ?? []) kinds.add(AUDIO_FORMATS.has(String(f).toLowerCase()) ? 'audiobook' : 'ebook');
+  }
+  return kinds;
+}
+
 /** BookOrbit's own auto-grab threshold; a release at or above it is grabbed without asking. */
 export const AUTO_GRAB_SCORE = 80;
 const GRABBABLE = new Set(['approved', 'searching', 'failed']);
@@ -283,7 +306,7 @@ export async function fetchFor(c: Client, req: any): Promise<Record<string, unkn
   }
 }
 
-async function search(c: Client, q: string, opts: Record<string, string>) {
+async function search(c: Client, cfg: Config, q: string, opts: Record<string, string>) {
   const kind = (opts.kind ?? 'audiobook') as Kind;
   if (kind !== 'audiobook' && kind !== 'ebook') fail('--kind must be audiobook or ebook');
   const qs = new URLSearchParams({ title: q, mediaKind: kind, resultsPerProvider: '5' });
@@ -319,9 +342,14 @@ async function search(c: Client, q: string, opts: Record<string, string>) {
       });
     } catch {}
   }
+  const person = opts.for ? findPerson(cfg, opts.for) : null;
+  const owned: Set<Kind>[] = person
+    ? await Promise.all(picks.map((p) => ownedKinds(c, person.libraryId, p.title ?? p.displayTitle, p.authors?.[0]).catch(() => new Set<Kind>())))
+    : [];
   return {
     query: q,
     kind,
+    for: person?.name,
     hiddenLookalikes: hidden || undefined,
     results: picks.map((p, i) => ({
       provider: p.provider,
@@ -332,7 +360,8 @@ async function search(c: Client, q: string, opts: Record<string, string>) {
       series: p.seriesName ? `${p.seriesName}${p.seriesIndex != null ? ` #${p.seriesIndex}` : ''}` : undefined,
       narrators: kind === 'audiobook' && p.narrators?.length ? p.narrators.join(', ') : undefined,
       hours: p.durationSeconds ? Math.round(p.durationSeconds / 360) / 10 : undefined,
-      inOwnersLibrary: avail[i]?.ownedBookId ? true : undefined,
+      inAFamilyLibrary: avail[i]?.ownedBookId ? true : undefined,
+      inTheirLibrary: owned[i]?.size ? [...owned[i]] : undefined,
       alreadyRequested: avail[i]?.existingRequestId ? (STATUS[avail[i].existingRequestStatus] ?? avail[i].existingRequestStatus) : undefined,
       about: short(p.description),
     })),
@@ -347,8 +376,8 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config
   switch (cmd) {
     case 'search': {
       const q = rest.join(' ').trim();
-      if (!q) fail('usage: search <title> [--author <name>] [--kind audiobook|ebook]');
-      return search(c, q, opts);
+      if (!q) fail('usage: search <title> [--author <name>] [--kind audiobook|ebook] [--for <first name>]');
+      return search(c, cfg, q, opts);
     }
     case 'request': {
       const [provider, providerId] = rest;
@@ -361,6 +390,16 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config
       if (!cand) fail(`no book ${provider}:${providerId} (search again)`);
       if (candLookalike(cand)) fail('that listing spells the title or author with lookalike letters (a knock-off); pick another search result');
       const work = { ...workPayload(cand), userId: person.userId };
+      let libraryCheck: string | undefined;
+      const owned = await ownedKinds(c, person.libraryId, work.title, work.authors[0]).catch((e) => {
+        libraryCheck = `could not check ${person.name}'s library first: ${e.message}`;
+        return new Set<Kind>();
+      });
+      const wanted: Kind[] = kind === 'both' ? ['ebook', 'audiobook'] : [kind];
+      const missing = wanted.filter((k) => !owned.has(k));
+      const have = wanted.filter((k) => owned.has(k));
+      const alreadyHas = have.length ? `${person.name} already has the ${have.join(' and ')} in their library` : undefined;
+      if (!missing.length) return { done: false, for: person.name, title: work.title, alreadyInLibrary: have, reason: alreadyHas };
       // A parent asked, so a request that BookOrbit parks for approval (a child has no
       // auto-approve) is approved straight away. The approval keeps the child's own library.
       const settle = async (res: any) => {
@@ -371,13 +410,14 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config
         }
         return { ...describe(req), joinedExisting: res.subscribed || undefined, ...(await fetchFor(c, req)) };
       };
-      if (kind === 'both') {
+      if (missing.length === 2) {
         const half = (k: Kind) => ({ targetLibraryId: person.libraryId, preferredFormats: prefs(cfg, k) });
         const r = await c.post('/book-requests/pairs', { ...work, ebook: half('ebook'), audiobook: half('audiobook') });
-        return { done: true, for: person.name, ebook: await settle(r.ebook), audiobook: await settle(r.audiobook) };
+        return { done: true, for: person.name, libraryCheck, ebook: await settle(r.ebook), audiobook: await settle(r.audiobook) };
       }
-      const r = await c.post('/book-requests', { ...work, mediaKind: kind, targetLibraryId: person.libraryId, preferredFormats: prefs(cfg, kind) });
-      return { done: true, ...(await settle(r)) };
+      const only = missing[0];
+      const r = await c.post('/book-requests', { ...work, mediaKind: only, targetLibraryId: person.libraryId, preferredFormats: prefs(cfg, only) });
+      return { done: true, ...(await settle(r)), alreadyInLibrary: have.length ? have : undefined, note: alreadyHas, libraryCheck };
     }
     case 'pending': {
       const res = await c.get('/admin/book-requests?status=pending&limit=20&sortBy=createdAt&sortDir=desc');
