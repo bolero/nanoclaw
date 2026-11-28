@@ -272,6 +272,19 @@ group('bookorbit tool', () => {
     expect((await run(REQ({ id: 4, status: 'available' }))).wakeAgent).toBe(false);
   });
 
+  it('check reports a request, linking a finished Shelfmark file first', async () => {
+    const one = (r: any, extra: any = {}) => fake({ 'GET /book-requests/7': r, ...extra }).f;
+    expect(await main(['check', '7'], one(REQ({ status: 'available' })), CFG)).toEqual({ state: 'done', detail: 'The Wild Robot (audiobook, for Anika): in the library' });
+    expect(await main(['check', '7'], one(REQ({ status: 'failed', statusReason: 'no releases' })), CFG)).toEqual({
+      state: 'failed',
+      detail: 'The Wild Robot (audiobook, for Anika): failed (no releases)',
+    });
+    const approved = REQ({ status: 'approved', targetLibraryId: 10 });
+    expect(await main(['check', '7'], one(approved, { 'GET /book-dock/files': { items: [] } }), CFG)).toMatchObject({ state: 'pending' });
+    const dock = { items: [{ id: 42, fileName: 'x.m4b', status: 'filed', targetLibraryId: 10, createdAt: '2026-11-27T10:06:00Z', selectedMetadata: { title: 'The Wild Robot' } }] };
+    expect(await main(['check', '7'], one(approved, { 'GET /book-dock/files': dock, 'POST /admin/book-requests/7/fulfill': REQ({ status: 'available' }) }), CFG)).toMatchObject({ state: 'done' });
+  });
+
   it('requires --kind and --for', async () => {
     const { f } = fake({});
     await expect(main(['request', 'audible', 'B0ABC', '--for', 'anika'], f, CFG)).rejects.toThrow(/--kind/);

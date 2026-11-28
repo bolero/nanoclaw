@@ -19,6 +19,8 @@
  *   bun bookorbit.ts grab <requestId> <indexerId> <guid>        download the release a parent chose
  *   bun bookorbit.ts link <requestId>            after a Shelfmark download, close the request with
  *                                                the file in the person's Library Dock
+ *   bun bookorbit.ts check <requestId>           one line {"state": "done"|"failed"|"pending", "detail"} (for
+ *       followups.ts --check). An approved request whose Shelfmark file is in the Library Dock is linked first.
  *   bun bookorbit.ts watch [--state <file>]      pre-task gate: wakes the agent only when a request reached
  *       the library, needs a check or failed since the last check. Prints one line {"wakeAgent": bool,
  *       "data": {...}}. State: --state, $BOOKORBIT_WATCH_STATE or /workspace/agent/state/bookorbit-watch.json.
@@ -527,6 +529,19 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config
       if (seen) await writeWatch(watchFile(opts), { ...seen, [String(id)]: (r.request ?? r).status ?? 'available' });
       return { done: true, dockFile: hit.fileName, dockStatus: hit.status, ...describe(r.request ?? r) };
     }
+    case 'check': {
+      const id = idArg(rest[0], 'check <requestId>');
+      let req = await c.get(`/book-requests/${id}`);
+      if (!WATCH_FINAL.has(req.status) && !['rejected', 'cancelled', 'pending'].includes(req.status)) {
+        const linked: any = await main(['link', String(id), ...(opts.state ? ['--state', opts.state] : [])], fetchImpl, cfg).catch(() => undefined);
+        if (linked?.done) req = { ...req, status: 'available' };
+      }
+      const d = describe(req);
+      const name = `${d.title} (${d.kind}, for ${d.for})`;
+      if (req.status === 'available' || req.status === 'needs_review') return { state: 'done', detail: `${name}: ${d.status}` };
+      if (['failed', 'rejected', 'cancelled'].includes(req.status)) return { state: 'failed', detail: `${name}: ${d.status}${d.reason ? ` (${d.reason})` : ''}` };
+      return { state: 'pending', detail: `${name}: ${d.status}` };
+    }
     case 'watch': {
       const file = watchFile(opts);
       const prev = await readWatch(file);
@@ -551,7 +566,7 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config
 
 if (import.meta.main) {
   main(process.argv.slice(2))
-    .then((out) => console.log(process.argv[2] === 'watch' ? JSON.stringify(out) : JSON.stringify(out, null, 2)))
+    .then((out) => console.log(['watch', 'check'].includes(process.argv[2]) ? JSON.stringify(out) : JSON.stringify(out, null, 2)))
     .catch((e) => {
       console.error(`error: ${e.message}`);
       process.exit(1);

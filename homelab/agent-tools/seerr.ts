@@ -10,6 +10,8 @@
  *   bun seerr.ts recent [--take 10]                      latest requests and where they are
  *   bun seerr.ts approve <requestId>                     only when a parent asks
  *   bun seerr.ts decline <requestId>                     only when a parent asks
+ *   bun seerr.ts check <requestId>                       one line {"state": "done"|"failed"|"pending", "detail"}
+ *                                                        (for followups.ts --check)
  *
  * Base URL: $SEERR_URL, else the first line of seerr.url next to this file. Output is JSON.
  */
@@ -203,14 +205,24 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, base = defa
       const [d] = await describeRequests(c, [r]);
       return { done: true, ...d };
     }
+    case 'check': {
+      const id = Number(rest[0]);
+      if (!Number.isInteger(id) || id <= 0) fail('usage: check <requestId>');
+      const r = await c.get(`/request/${id}`);
+      const [d] = await describeRequests(c, [r]);
+      const name = d.seasons?.length ? `${d.title} (seasons ${d.seasons.join(', ')})` : d.title;
+      if (r.status === 3 || r.status === 4) return { state: 'failed', detail: `${name}: request ${d.request}` };
+      if (r.media?.status === 5 || r.status === 5) return { state: 'done', detail: `${name} is available in Silo` };
+      return { state: 'pending', detail: `${name}: ${d.media ?? d.request}` };
+    }
     default:
-      fail('usage: search | request | pending | recent | approve | decline (see the header of seerr.ts)');
+      fail('usage: search | request | pending | recent | approve | decline | check (see the header of seerr.ts)');
   }
 }
 
 if (import.meta.main) {
   main(process.argv.slice(2))
-    .then((out) => console.log(JSON.stringify(out, null, 2)))
+    .then((out) => console.log(process.argv[2] === 'check' ? JSON.stringify(out) : JSON.stringify(out, null, 2)))
     .catch((e) => {
       console.error(`error: ${e.message}`);
       process.exit(1);

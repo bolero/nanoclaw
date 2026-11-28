@@ -92,4 +92,10 @@ describe('seerr tool', () => {
     const ok: any = await main(['approve', '40'], f, 'https://x');
     expect(ok).toMatchObject({ done: true, requestId: 40, request: 'approved' });
   });
+  it('check reports done, failed or pending for one request', async () => {
+    const R = (status: number, media: number) => fake({ 'GET /request/9': { id: 9, type: 'movie', status, media: { tmdbId: 5, status: media } }, 'GET /movie/5': { title: 'Up', releaseDate: '2009-05-28' } }).f;
+    expect(await main(['check', '9'], R(2, 5), 'https://s')).toEqual({ state: 'done', detail: 'Up (2009) is available in Silo' });
+    expect(await main(['check', '9'], R(2, 3), 'https://s')).toMatchObject({ state: 'pending' });
+    expect(await main(['check', '9'], R(3, 2), 'https://s')).toEqual({ state: 'failed', detail: 'Up (2009): request declined' });
+  });
 });
