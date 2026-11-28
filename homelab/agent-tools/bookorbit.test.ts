@@ -324,3 +324,21 @@ group('cancel', () => {
     expect(out).toMatchObject({ done: true, requestId: 7, status: 'cancelled' });
   });
 });
+
+group('preferred formats', () => {
+  it('asks for epub and m4b/m4a unless the config says otherwise', async () => {
+    const routes = {
+      'GET /metadata-fetch/lookup': CAND,
+      'POST /book-requests': { request: REQ({ status: 'available' }) },
+      'POST /book-requests/pairs': { ebook: { request: REQ({ status: 'available', mediaKind: 'ebook' }) }, audiobook: { request: REQ({ status: 'available' }) } },
+    };
+    const a = fake(routes);
+    await main(['request', 'audible', 'B0ABC', '--for', 'anika', '--kind', 'both'], a.f, CFG);
+    const pair = a.calls.find((c) => c.url === '/book-requests/pairs')!.body;
+    expect(pair.ebook.preferredFormats).toEqual(['epub']);
+    expect(pair.audiobook.preferredFormats).toEqual(['m4b', 'm4a']);
+    const b = fake(routes);
+    await main(['request', 'audible', 'B0ABC', '--for', 'anika', '--kind', 'audiobook'], b.f, { ...CFG, preferredFormats: { audiobook: ['mp3'] } });
+    expect(b.calls.find((c) => c.url === '/book-requests')!.body.preferredFormats).toEqual(['mp3']);
+  });
+});

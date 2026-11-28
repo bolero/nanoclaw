@@ -113,10 +113,12 @@ const kindOf = (v: string | undefined): Kind => {
 
 const langOf = (r: any): string | undefined => r.language ?? r.extra?.language ?? undefined;
 
-/** English epubs first for ebooks; otherwise Shelfmark's own order. */
+const PREFERRED: Record<Kind, RegExp> = { ebook: /\bepub\b/i, audiobook: /\bm4[ab]\b/i };
+const formatsOf = (r: any) => [r.format, r.extra?.formats_display, ...(r.extra?.formats ?? []), r.title].filter(Boolean).join(' ');
+
+/** English first, then the preferred format (epub; m4b or m4a); otherwise Shelfmark's own order. */
 export function rank(list: any[], kind: Kind) {
-  const score = (r: any) =>
-    (/\ben\b/i.test(langOf(r) ?? '') ? 2 : 0) + (kind === 'ebook' && String(r.format ?? '').toLowerCase() === 'epub' ? 1 : 0);
+  const score = (r: any) => (/\ben\b/i.test(langOf(r) ?? '') ? 2 : 0) + (PREFERRED[kind].test(formatsOf(r)) ? 1 : 0);
   return list.map((r, i) => ({ r, i, s: score(r) })).sort((a, b) => b.s - a.s || a.i - b.i).map((x) => x.r);
 }
 

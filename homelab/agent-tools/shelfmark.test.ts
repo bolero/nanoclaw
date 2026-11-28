@@ -88,6 +88,11 @@ group('shelfmark', () => {
     await expect(main(['status'], f, CFG)).rejects.toThrow('Shelfmark GET /status -> 401: Unauthorized');
   });
 
+  it('puts m4b/m4a audiobooks first', () => {
+    const list = [REL({ source_id: 'mp3', format: undefined, extra: { formats: ['mp3'] } }), REL({ source_id: 'm4b', format: undefined, extra: { formats: ['m4b'] } })];
+    expect(rank(list, 'audiobook').map((r) => r.source_id)).toEqual(['m4b', 'mp3']);
+  });
+
   it('rank keeps Shelfmark order among equals', () => {
     expect(rank([REL({ source_id: '1' }), REL({ source_id: '2' })], 'ebook').map((r) => r.source_id)).toEqual(['1', '2']);
   });

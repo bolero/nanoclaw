@@ -25,13 +25,18 @@
  * and refused for a request; nothing can be downloaded for them.
  *
  * Config: bookorbit.json next to this file: {"url": "...", "people": {"<first name>": {"userId": N,
- * "libraryId": N}}}. $BOOKORBIT_URL overrides the url. Output is JSON.
+ * "libraryId": N}}, "preferredFormats"?: {"ebook": [...], "audiobook": [...]}} (default epub; m4b, m4a). $BOOKORBIT_URL overrides the url. Output is JSON.
  */
 
 type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 type Kind = 'audiobook' | 'ebook';
 export type Person = { userId: number; libraryId: number };
-export type Config = { url: string; people: Record<string, Person> };
+export type Config = { url: string; people: Record<string, Person>; preferredFormats?: Partial<Record<Kind, string[]>> };
+
+/** BookOrbit scores a preferred format 12 points (another usable format 6), so these lift releases
+ * toward the auto-grab score; other formats are still allowed. Override in bookorbit.json. */
+export const PREFERRED_FORMATS: Record<Kind, string[]> = { ebook: ['epub'], audiobook: ['m4b', 'm4a'] };
+const prefs = (cfg: Config, kind: Kind) => cfg.preferredFormats?.[kind] ?? PREFERRED_FORMATS[kind];
 
 export const STATUS: Record<string, string> = {
   pending: 'waiting for a parent',
@@ -172,7 +177,7 @@ export function loadConfig(): Config {
   } catch {}
   const url = process.env.BOOKORBIT_URL || cfg.url;
   if (!url) fail('no BookOrbit URL: set BOOKORBIT_URL or "url" in bookorbit.json');
-  return { url: url!, people: cfg.people ?? {} };
+  return { url: url!, people: cfg.people ?? {}, preferredFormats: cfg.preferredFormats };
 }
 
 export function findPerson(cfg: Config, name: string): Person & { name: string } {
@@ -367,11 +372,11 @@ export async function main(argv: string[], fetchImpl: Fetch = fetch, cfg: Config
         return { ...describe(req), joinedExisting: res.subscribed || undefined, ...(await fetchFor(c, req)) };
       };
       if (kind === 'both') {
-        const half = { targetLibraryId: person.libraryId };
-        const r = await c.post('/book-requests/pairs', { ...work, ebook: half, audiobook: half });
+        const half = (k: Kind) => ({ targetLibraryId: person.libraryId, preferredFormats: prefs(cfg, k) });
+        const r = await c.post('/book-requests/pairs', { ...work, ebook: half('ebook'), audiobook: half('audiobook') });
         return { done: true, for: person.name, ebook: await settle(r.ebook), audiobook: await settle(r.audiobook) };
       }
-      const r = await c.post('/book-requests', { ...work, mediaKind: kind, targetLibraryId: person.libraryId, preferredFormats: [] });
+      const r = await c.post('/book-requests', { ...work, mediaKind: kind, targetLibraryId: person.libraryId, preferredFormats: prefs(cfg, kind) });
       return { done: true, ...(await settle(r)) };
     }
     case 'pending': {
